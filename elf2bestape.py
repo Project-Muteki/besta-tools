@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from typing import (
+    Any,
+    Tuple,
+    Dict,
+    Sequence,
+    Optional,
+    BinaryIO,
+    List,
+)
+
+import argparse
+import datetime
+import enum
+import io
+import logging
+import os
+import shutil
+
+import pefile
+from elftools.elf.elffile import ELFFile
+from elftools.elf import constants as elfconsts
+from elftools.elf import enums as elfenums
+from elftools.elf.relocation import RelocationSection
+
+ELF2BESTAPE_VERSION = (0, 1, 0)
+
+PEStructureDefinition = Tuple[str, Sequence[str]]
+
+def pefile_struct_from_dict(format_: PEStructureDefinition, data: Dict[str, Any], name: Optional[str] = None, file_offset: Optional[int] = None) -> pefile.Structure:
+    pe_struct = pefile.Structure(format_, name, file_offset)
+    pe_struct.__dict__.update(data)
+    return pe_struct
+
+
+EMPTY_DOS_HEADER = {
+    'e_magic': pefile.IMAGE_DOS_SIGNATURE,
+    'e_cblp': 0x0,
+    'e_cp': 0x0,
+    'e_crlc': 0x0,
+    'e_cparhdr': 0x0,
+    'e_minalloc': 0x0,
+    'e_maxalloc': 0x0,
+    'e_ss': 0x0,
+    'e_sp': 0x0,
+    'e_csum': 0x0,
+    'e_ip': 0x0,
+    'e_cs': 0x0,
+    'e_lfarlc': 0x0,
+    'e_ovno': 0x0,
+    'e_res': b'\x00\x00\x00\x00\x00\x00\x00\x00',
+    'e_oemid': 0x0,
+    'e_oeminfo': 0x0,
+    'e_res2': b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+    'e_lfanew': 0x40,
+}
+
+NT_HEADER = { 'Signature': pefile.IMAGE_NT_SIGNATURE }
+
+EMPTY_FILE_HEADER = {
+    'Machine': pefile.MACHINE_TYPE['IMAGE_FILE_MACHINE_ARM'], # see pefile.MACHINE_TYPE
+    'NumberOfSections': 0,
+    'TimeDateStamp': 0,
+    'PointerToSymbolTable': 0x0,
+    'NumberOfSymbols': 0x0,
+    'SizeOfOptionalHeader': 0, # To be filled later.
+    'Characteristics': 0, # see pefile.IMAGE_CHARACTERISTICS
+}
+
+EMPTY_OPTIONAL_HEADER = {
+    "Magic": pefile.OPTIONAL_HEADER_MAGIC_PE,
+    "MajorLinkerVersion": ELF2BESTAPE_VERSION[0],
+    "MinorLinkerVersion": ELF2BESTAPE_VERSION[1],
+    "SizeOfCode": 0,
+    "SizeOfInitializedData": 0,
+    "SizeOfUninitializedData": 0,
+    "AddressOfEntryPoint": 0,
+    "BaseOfCode": 0,
+    "BaseOfData": 0,
+    "ImageBase": 0,
+    "SectionAlignment": 0x1000,
+    "FileAlignment": 0x200,
+    "MajorOperatingSystemVersion": 4, # NT 4.0 (?)
+    "MinorOperatingSystemVersion": 0,
+    "MajorImageVersion": 1,
+    "MinorImageVersion": 0,
+    "MajorSubsystemVersion": 4,
+    "MinorSubsystemVersion": 0,
+    "Reserved1": 0,
+    "SizeOfImage": 0,
+    "SizeOfHeaders": 0, # Calculate from adding all header sizes
+    "CheckSum": 0,
+    "Subsystem": pefile.SUBSYSTEM_TYPE['IMAGE_SUBSYSTEM_WINDOWS_CE_GUI'], # pefile.SUBSYSTEM_TYPE
+    "DllCharacteristics": 0, # pefile.DLL_CHARACTERISTICS
+    "SizeOfStackReserve": 1 * 1024 * 1024,
+    "SizeOfStackCommit": 4096,
+    "SizeOfHeapReserve": 1 * 1024 * 1024,
+    "SizeOfHeapCommit": 4096,
+    "LoaderFlags": 0,
+    "NumberOfRvaAndSizes": pefile.IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
+}
+
+EMPTY_SECTION_HEADER = {
+    "Name": b'',
+    "Misc_VirtualSize": 0,
+    "VirtualAddress": 0,
+    "SizeOfRawData": 0,
+    "PointerToRawData": 0,
+    "PointerToRelocations": 0,
+    "PointerToLinenumbers": 0,
+    "NumberOfRelocations": 0,
+    "NumberOfLinenumbers": 0,
+    "Characteristics": 0, # pefile.SECTION_CHARACTERISTICS
+}
+
+BESTAPE_MAX_HEADER_SIZE = 0x1000 # 1 memory page
+
+class BestaELFSegment(enum.IntEnum):
+    SEG_TEXT = 0
+    SEG_RDATA = 1
+    SEG_DATA = 2
+    TOTAL = 3
+
+class BestaPESection(enum.IntEnum):
+    SCN_TEXT = BestaELFSegment.SEG_TEXT
+    SCN_RDATA = BestaELFSegment.SEG_RDATA
+    SCN_DATA = BestaELFSegment.SEG_DATA
+    SCN_RELOC = 3
+    TOTAL = 4
+
+def align(pos: int, blksize: int) -> int:
+    return (pos // blksize * blksize) + (blksize if pos % blksize != 0 else 0)
+
+def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
+    p = argparse.ArgumentParser(description='Post-linker for Besta PE files.')
+    p.add_argument('elf', help='Input ELF file.')
+    p.add_argument('-o', '--output', help='Besta PE file to output (or ELF\'s basename + .exe if not supplied).')
+    return p, p.parse_args()
+
+def generate_padding(length: int, blksize: int) -> bytes:
+    return b'\x00' * (align(length, blksize) - length)
+
+def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
+    elf = ELFFile(elf_file)
+
+    if (elf.num_segments()) != BestaELFSegment.TOTAL:
+        logging.error('Unexpected ELF file with %d segments (expecting %d)', elf.num_segments(), BestaELFSegment.TOTAL)
+
+    # Pass 1: Setup basic PE header fields
+    optional_header_dict = EMPTY_OPTIONAL_HEADER.copy()
+    text_base = 0
+    data_base = 0
+    text_size = 0
+    data_size = 0
+    bss_size = 0
+    reloc_base = 0
+    text_data: Optional[bytes] = None
+    rdata_data: Optional[bytes] = None
+    data_data: Optional[bytes] = None
+    elf_base = elf.get_segment(BestaELFSegment.SEG_TEXT)['p_vaddr']
+    image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
+
+    # Generate section headers
+    section_dicts = []
+    for idx, seg in enumerate(elf.iter_segments()):
+        sec_header_dict = EMPTY_SECTION_HEADER.copy()
+        if seg['p_type'] == 'PT_LOAD':
+            if idx == BestaELFSegment.SEG_TEXT and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X:
+                sec_header_dict['Name'] = b'.text'
+                sec_header_dict['Characteristics'] = (
+                    pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_CODE'] |
+                        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_READ'] |
+                        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_EXECUTE']
+                )
+                text_base = seg['p_vaddr'] - image_base
+                text_size = align(seg['p_filesz'], 0x200)
+                text_data = seg.data()
+            elif idx == BestaELFSegment.SEG_RDATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R:
+                sec_header_dict['Name'] = b'.rdata'
+                sec_header_dict['Characteristics'] = (
+                    pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
+                        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_READ']
+                )
+                data_base = seg['p_vaddr'] - image_base
+                data_size += align(seg['p_filesz'], 0x200)
+                rdata_data = seg.data()
+            elif idx == BestaELFSegment.SEG_DATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_W:
+                sec_header_dict['Name'] = b'.data'
+                sec_header_dict['Characteristics'] = (
+                    pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
+                        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_READ'] |
+                        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_WRITE']
+                )
+                data_size += align(seg['p_filesz'], 0x200)
+                bss_size = seg['p_memsz'] - seg['p_filesz']
+                if bss_size != 0:
+                    sec_header_dict['Characteristics'] |= pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_UNINITIALIZED_DATA']
+                data_data = seg.data()
+                # PE relocation table begins after the end of all ELF segments.
+                reloc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
+            else:
+                raise RuntimeError(f'Unknown PT_LOAD segment {idx} with flag {seg["p_flags"]:#010x}')
+        else:
+            raise RuntimeError(f'Unknown segment {seg["p_type"]}')
+        sec_header_dict['Misc_VirtualSize'] = sec_header_dict['Misc_PhysicalAddress'] = sec_header_dict['Misc'] = seg['p_memsz']
+        sec_header_dict['VirtualAddress'] = seg['p_vaddr'] - image_base
+        sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'], 0x200)
+        # To be fixed in pass 2
+        # sec_header_dict['PointerToRawData']
+        section_dicts.append(sec_header_dict)
+
+    optional_header_dict['SizeOfCode'] = text_size
+    optional_header_dict['SizeOfInitializedData'] = data_size
+    optional_header_dict['SizeOfUninitializedData'] = bss_size
+    optional_header_dict['AddressOfEntryPoint'] = elf['e_entry'] - image_base
+    optional_header_dict['BaseOfCode'] = text_base
+    optional_header_dict['BaseOfData'] = data_base
+    optional_header_dict['ImageBase'] = image_base
+    # To be fixed in pass 2
+    #optional_header_dict['SizeOfImage']
+    #optional_header_dict['SizeOfHeaders']
+
+    reloc_dicts: Dict[int, Dict[int, int]] = {}
+    # Generate the reloc table
+    for rel_section in elf.iter_sections():
+        if isinstance(rel_section, RelocationSection):
+            logging.debug('Processing section %s', rel_section.name)
+            # Complain on RELA
+            if rel_section.is_RELA():
+                raise RuntimeError('RELA relocation is not supported.')
+            rel_target_sec = elf.get_section(rel_section['sh_info'])
+            # Skip non-loadable sections
+            if (rel_target_sec['sh_flags'] & elfconsts.SH_FLAGS.SHF_ALLOC) == 0:
+                continue
+            rel_target_data = rel_target_sec.data()
+            # Sorta ported from 3dsxtool since we are pretty much using the 3dsx linker script
+            for reloc in rel_section.iter_relocations():
+                symtab = elf.get_section(rel_section['sh_link'])
+                sym, type_ = symtab.get_symbol(reloc['r_info_sym']), reloc['r_info_type']
+                sym_offset = sym['st_value']
+                rel_offset = reloc['r_offset']
+                rel_word_offset = rel_offset - rel_target_sec['sh_addr']
+                rel_target_word = int.from_bytes(rel_target_data[rel_word_offset:rel_word_offset+4], 'little')
+                
+                if type_ in (elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_ABS32'],
+                             elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TARGET1']):
+                    logging.debug('Abs reloc type=%#x, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', type_, rel_target_word, sym_offset, rel_offset, rel_word_offset)
+                    if sym['st_info']['bind'] == 'STB_WEAK' and sym_offset == 0:
+                        continue
+
+                    assert rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
+                    rel_offset_hi = rel_offset & 0xfffff000
+                    rel_offset_lo = rel_offset & 0x00000fff
+                    if rel_offset_hi not in reloc_dicts:
+                        reloc_dicts[rel_offset_hi] = {}
+                    reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
+                elif type_ in (elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_REL32'],
+                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TARGET2'],
+                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_PREL31'],
+                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TLS_IE32']):
+                    raise RuntimeError('Relative REL is not yet implemented.')
+
+    # Actually generate relocs
+    generated_relocs: List[pefile.Structure] = []
+    reloc_pos = 0
+    for hi, los in reloc_dicts.items():
+        base_reloc_struct = pefile_struct_from_dict(pefile.PE.__IMAGE_BASE_RELOCATION_format__, {'VirtualAddress': hi - image_base, 'SizeOfBlock': 0}, file_offset=reloc_pos)
+        generated_relocs.append(base_reloc_struct)
+        base_reloc_struct.SizeOfBlock = 8
+        reloc_pos += generated_relocs[-1].sizeof()
+        for lo, type_ in los.items():
+            generated_relocs.append(pefile_struct_from_dict(pefile.PE.__IMAGE_BASE_RELOCATION_ENTRY_format__, {'Data': (type_ << 12 | lo)}, file_offset=reloc_pos))
+            reloc_pos += generated_relocs[-1].sizeof()
+            base_reloc_struct.SizeOfBlock += generated_relocs[-1].sizeof()
+        if len(los) % 2 == 1:
+            # pad the entry so the reloc table is always 4 byte aligned
+            generated_relocs.append(pefile_struct_from_dict(pefile.PE.__IMAGE_BASE_RELOCATION_ENTRY_format__, {'Data': 0}, file_offset=reloc_pos))
+            reloc_pos += generated_relocs[-1].sizeof()
+            base_reloc_struct.SizeOfBlock += generated_relocs[-1].sizeof()
+
+    relocs_data_io = io.BytesIO()
+    for reloc_struct in generated_relocs:
+        relocs_data_io.write(reloc_struct.__pack__())
+
+    reloc_data = relocs_data_io.getvalue()
+    reloc_size = align(reloc_pos, 0x200)
+    reloc_memsize = reloc_pos
+
+    reloc_section_header = EMPTY_SECTION_HEADER.copy()
+    reloc_section_header['Name'] = b'.reloc'
+    reloc_section_header['Characteristics'] = (
+        pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
+            pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_DISCARDABLE'] |
+            pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_READ']
+    )
+    reloc_section_header['Misc_VirtualSize'] = reloc_section_header['Misc_PhysicalAddress'] = reloc_section_header['Misc'] = reloc_memsize
+    reloc_section_header['VirtualAddress'] = reloc_base
+    reloc_section_header['SizeOfRawData'] = reloc_size
+    section_dicts.append(reloc_section_header)
+
+    pos = 0x0
+
+    dos_header = pefile_struct_from_dict(pefile.PE.__IMAGE_DOS_HEADER_format__, EMPTY_DOS_HEADER, file_offset=pos)
+    pos += dos_header.sizeof()
+
+    nt_header = pefile_struct_from_dict(pefile.PE.__IMAGE_NT_HEADERS_format__, NT_HEADER, file_offset=pos)
+    pos += nt_header.sizeof()
+
+    file_header_dict = EMPTY_FILE_HEADER.copy()
+    # Number of sections will be filled in later
+    file_header_dict['TimeDateStamp'] = int(datetime.datetime.now().timestamp())
+    file_header_dict['Characteristics'] = (
+        pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_EXECUTABLE_IMAGE'] |
+            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_32BIT_MACHINE'] |
+            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_LINE_NUMS_STRIPPED'] |
+            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_LOCAL_SYMS_STRIPPED'] |
+            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_DEBUG_STRIPPED']
+    )
+    file_header_dict['NumberOfSections'] = len(section_dicts)
+    file_header = pefile_struct_from_dict(pefile.PE.__IMAGE_FILE_HEADER_format__, file_header_dict, file_offset=pos)
+    pos += file_header.sizeof()
+
+    optional_header = pefile_struct_from_dict(pefile.PE.__IMAGE_OPTIONAL_HEADER_format__, optional_header_dict, file_offset=pos)
+    pos += optional_header.sizeof()
+
+    directories: List[pefile.Structure] = []
+    for _ in range(pefile.IMAGE_NUMBEROF_DIRECTORY_ENTRIES):
+        dir_ = pefile_struct_from_dict(pefile.PE.__IMAGE_DATA_DIRECTORY_format__, {'VirtualAddress': 0, 'Size': 0}, file_offset=pos)
+        pos += dir_.sizeof()
+        directories.append(dir_)
+
+    directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].VirtualAddress = reloc_base
+    directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].Size = reloc_memsize
+    # TODO set reloc table location
+
+    # Set optional header size
+    file_header.SizeOfOptionalHeader = optional_header.sizeof() + sum(dir_.sizeof() for dir_ in directories)
+
+    sections: List[pefile.Structure] = []
+
+    for sec in section_dicts:
+        pestruct = pefile_struct_from_dict(pefile.PE.__IMAGE_SECTION_HEADER_format__, sec, file_offset=pos)
+        sections.append(pestruct)
+        pos += pestruct.sizeof()
+
+    pos = align(pos, 0x200)
+
+    # Pass 2: fixing field values that were not yet available during pass 1 and prepare the actual section data
+    header_size = pos
+    optional_header.SizeOfHeaders = header_size
+
+    for sec_struct in sections:
+        sec_struct.PointerToRawData = pos
+        pos += sec_struct.SizeOfRawData # pylint:disable=invalid-name
+
+    image_size = pos
+    optional_header.SizeOfImage = align(reloc_base + reloc_memsize, 0x1000)
+
+    logging.debug("File Header:")
+    logging.debug(file_header)
+    logging.debug('Optional Header:')
+    logging.debug(optional_header)
+    logging.debug('Directory Header:')
+    for dir_ in directories:
+        logging.debug(dir_)
+    logging.debug('Section Header:')
+    for sec in sections:
+        logging.debug(sec)
+
+    all_headers = (
+        dos_header,
+        nt_header,
+        file_header,
+        optional_header,
+        *directories,
+        *sections,
+    )
+
+    for hdr in all_headers:
+        pe_file.write(hdr.__pack__())
+
+    pe_file.write(generate_padding(pe_file.tell(), 0x200))
+
+    print(f'{pe_file.tell():#x}')
+    for data in (text_data, rdata_data, data_data, reloc_data):
+        if data is not None:
+            pe_file.write(data)
+            pe_file.write(generate_padding(pe_file.tell(), 0x200))
+        print(f'{pe_file.tell():#x}')
+    actual_image_size = len(pe_file.getvalue())
+    assert actual_image_size == image_size, f'Inconsistent generated image size vs calculated (expecting {image_size:#x}, got {actual_image_size:#x}).'
+
+    # Pass 3: using pefile for some fixing and linting
+    pefile_obj = pefile.PE(data=pe_file.getvalue())
+    pefile_obj.OPTIONAL_HEADER.CheckSum = pefile_obj.generate_checksum()
+
+    pe_file.truncate(0)
+    pe_file.seek(0)
+
+    logging.debug('pefile objdump:\n%s', pefile_obj.dump_info())
+    for pefile_warning in pefile_obj.get_warnings():
+        logging.info('pefile warning: %s', pefile_warning)
+    pe_file.write(pefile_obj.write())
+
+if __name__ == '__main__':
+    _, args = parse_args()
+    logging.basicConfig(level=logging.DEBUG)
+    if args.output is None:
+        output_path = f'{os.path.splitext(args.elf)[0]}{os.path.extsep}exe'
+    with open(args.elf, 'rb') as elf_file:
+        pe_file = io.BytesIO()
+        convert(elf_file, pe_file, args)
+    with open(output_path, 'wb') as actual_pe_file:
+        pe_file.seek(0)
+        shutil.copyfileobj(pe_file, actual_pe_file)
