@@ -137,6 +137,7 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p = argparse.ArgumentParser(description='Post-linker for Besta PE files.')
     p.add_argument('elf', help='Input ELF file.')
     p.add_argument('-o', '--output', help='Besta PE file to output (or ELF\'s basename + .exe if not supplied).')
+    p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
     return p, p.parse_args()
 
 def generate_padding(length: int, blksize: int) -> bytes:
@@ -310,7 +311,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
 
     file_header_dict = EMPTY_FILE_HEADER.copy()
     # Number of sections will be filled in later
-    file_header_dict['TimeDateStamp'] = int(datetime.datetime.now().timestamp())
+
+    if not args.deterministic:
+        file_header_dict['TimeDateStamp'] = int(datetime.datetime.now().timestamp())
+
     file_header_dict['Characteristics'] = (
         pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_EXECUTABLE_IMAGE'] |
             pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_32BIT_MACHINE'] |
@@ -409,6 +413,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
     if args.output is None:
         output_path = f'{os.path.splitext(args.elf)[0]}{os.path.extsep}exe'
+    else:
+        output_path = args.output
     with open(args.elf, 'rb') as elf_file:
         pe_file = io.BytesIO()
         convert(elf_file, pe_file, args)
