@@ -9,6 +9,7 @@ from typing import (
     Optional,
     BinaryIO,
     List,
+    Union,
 )
 
 import argparse
@@ -133,6 +134,12 @@ class BestaPESection(enum.IntEnum):
 def align(pos: int, blksize: int) -> int:
     return (pos // blksize * blksize) + (blksize if pos % blksize != 0 else 0)
 
+def lalign(pos: int, blksize: int) -> int:
+    return pos // blksize * blksize
+
+def lpadding(pos: int, blksize: int) -> int:
+    return pos - (pos // blksize * blksize)
+
 def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p = argparse.ArgumentParser(description='Post-linker for Besta PE files.')
     p.add_argument('elf', help='Input ELF file.')
@@ -157,16 +164,19 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     data_size = 0
     bss_size = 0
     reloc_base = 0
-    text_data: Optional[bytes] = None
-    rdata_data: Optional[bytes] = None
-    data_data: Optional[bytes] = None
+    text_data: Optional[Union[Tuple[bytes, int], bytes]] = None
+    rdata_data: Optional[Union[Tuple[bytes, int], bytes]] = None
+    data_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     elf_base = elf.get_segment(BestaELFSegment.SEG_TEXT)['p_vaddr']
     image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
 
     # Generate section headers
     section_dicts = []
+    segment_lpaddings = {}
     for idx, seg in enumerate(elf.iter_segments()):
         sec_header_dict = EMPTY_SECTION_HEADER.copy()
+        # Workaround data alignment issue in stock GCC ldscript.
+        lpad = lpadding(seg['p_vaddr'] - image_base, 0x1000)
         if seg['p_type'] == 'PT_LOAD':
             if idx == BestaELFSegment.SEG_TEXT and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X:
                 sec_header_dict['Name'] = b'.text'
@@ -177,7 +187,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 )
                 text_base = seg['p_vaddr'] - image_base
                 text_size = align(seg['p_filesz'], 0x200)
-                text_data = seg.data()
+                text_data = (seg.data(), lpad)
             elif idx == BestaELFSegment.SEG_RDATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R:
                 sec_header_dict['Name'] = b'.rdata'
                 sec_header_dict['Characteristics'] = (
@@ -186,7 +196,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 )
                 data_base = seg['p_vaddr'] - image_base
                 data_size += align(seg['p_filesz'], 0x200)
-                rdata_data = seg.data()
+                rdata_data = (seg.data(), lpad)
             elif idx == BestaELFSegment.SEG_DATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_W:
                 sec_header_dict['Name'] = b'.data'
                 sec_header_dict['Characteristics'] = (
@@ -198,7 +208,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 bss_size = seg['p_memsz'] - seg['p_filesz']
                 if bss_size != 0:
                     sec_header_dict['Characteristics'] |= pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_UNINITIALIZED_DATA']
-                data_data = seg.data()
+                data_data = (seg.data(), lpad)
                 # PE relocation table begins after the end of all ELF segments.
                 reloc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
@@ -206,8 +216,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
         else:
             raise RuntimeError(f'Unknown segment {seg["p_type"]}')
         sec_header_dict['Misc_VirtualSize'] = sec_header_dict['Misc_PhysicalAddress'] = sec_header_dict['Misc'] = seg['p_memsz']
-        sec_header_dict['VirtualAddress'] = seg['p_vaddr'] - image_base
-        sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'], 0x200)
+        sec_header_dict['VirtualAddress'] = lalign(seg['p_vaddr'] - image_base, 0x1000)
+        sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'] + lpad, 0x200)
+        if lpad != 0:
+            logging.warning(f'ELF segment {idx} not aligned with page boundary. Manually padding it. This will slightly increase the executable size.')
         # To be fixed in pass 2
         # sec_header_dict['PointerToRawData']
         section_dicts.append(sec_header_dict)
@@ -219,6 +231,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     optional_header_dict['BaseOfCode'] = text_base
     optional_header_dict['BaseOfData'] = data_base
     optional_header_dict['ImageBase'] = image_base
+    optional_header_dict['SectionAlignment'] = 0x1000
     # To be fixed in pass 2
     #optional_header_dict['SizeOfImage']
     #optional_header_dict['SizeOfHeaders']
@@ -285,7 +298,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     for reloc_struct in generated_relocs:
         relocs_data_io.write(reloc_struct.__pack__())
 
-    reloc_data = relocs_data_io.getvalue()
+    reloc_data = (relocs_data_io.getvalue(), 0)
     reloc_size = align(reloc_pos, 0x200)
     reloc_memsize = reloc_pos
 
@@ -337,7 +350,6 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
 
     directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].VirtualAddress = reloc_base
     directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].Size = reloc_memsize
-    # TODO set reloc table location
 
     # Set optional header size
     file_header.SizeOfOptionalHeader = optional_header.sizeof() + sum(dir_.sizeof() for dir_ in directories)
@@ -387,12 +399,13 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
 
     pe_file.write(generate_padding(pe_file.tell(), 0x200))
 
-    print(f'{pe_file.tell():#x}')
     for data in (text_data, rdata_data, data_data, reloc_data):
         if data is not None:
-            pe_file.write(data)
+            lpad = data[1]
+            if lpad != 0:
+                pe_file.write(b'\x00' * lpad)
+            pe_file.write(data[0])
             pe_file.write(generate_padding(pe_file.tell(), 0x200))
-        print(f'{pe_file.tell():#x}')
     actual_image_size = len(pe_file.getvalue())
     assert actual_image_size == image_size, f'Inconsistent generated image size vs calculated (expecting {image_size:#x}, got {actual_image_size:#x}).'
 
