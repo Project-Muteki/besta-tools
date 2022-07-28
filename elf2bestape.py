@@ -26,7 +26,18 @@ from elftools.elf import constants as elfconsts
 from elftools.elf import enums as elfenums
 from elftools.elf.relocation import RelocationSection
 
+
 ELF2BESTAPE_VERSION = (0, 1, 0)
+
+
+logger = logging.getLogger('elf2bestape')
+
+def parse_loglevel(level: str) -> Union[int, str]:
+    try:
+        return int(level)
+    except ValueError:
+        return level
+
 
 PEStructureDefinition = Tuple[str, Sequence[str]]
 
@@ -118,11 +129,13 @@ EMPTY_SECTION_HEADER = {
 
 BESTAPE_MAX_HEADER_SIZE = 0x1000 # 1 memory page
 
+
 class BestaELFSegment(enum.IntEnum):
     SEG_TEXT = 0
     SEG_RDATA = 1
     SEG_DATA = 2
     TOTAL = 3
+
 
 class BestaPESection(enum.IntEnum):
     SCN_TEXT = BestaELFSegment.SEG_TEXT
@@ -130,6 +143,7 @@ class BestaPESection(enum.IntEnum):
     SCN_DATA = BestaELFSegment.SEG_DATA
     SCN_RELOC = 3
     TOTAL = 4
+
 
 def align(pos: int, blksize: int) -> int:
     return (pos // blksize * blksize) + (blksize if pos % blksize != 0 else 0)
@@ -143,6 +157,7 @@ def lpadding(pos: int, blksize: int) -> int:
 def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p = argparse.ArgumentParser(description='Post-linker for Besta PE files.')
     p.add_argument('elf', help='Input ELF file.')
+    p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
     p.add_argument('-o', '--output', help='Besta PE file to output (or ELF\'s basename + .exe if not supplied).')
     p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
     return p, p.parse_args()
@@ -154,7 +169,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     elf = ELFFile(elf_file)
 
     if (elf.num_segments()) != BestaELFSegment.TOTAL:
-        logging.error('Unexpected ELF file with %d segments (expecting %d)', elf.num_segments(), BestaELFSegment.TOTAL)
+        logger.error('Unexpected ELF file with %d segments (expecting %d)', elf.num_segments(), BestaELFSegment.TOTAL)
 
     # Pass 1: Setup basic PE header fields
     optional_header_dict = EMPTY_OPTIONAL_HEADER.copy()
@@ -219,7 +234,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
         sec_header_dict['VirtualAddress'] = lalign(seg['p_vaddr'] - image_base, 0x1000)
         sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'] + lpad, 0x200)
         if lpad != 0:
-            logging.warning(f'ELF segment {idx} not aligned with page boundary. Manually padding it. This will slightly increase the executable size.')
+            logger.warning(f'ELF segment {idx} not aligned with page boundary. Manually padding it. This will slightly increase the executable size.')
         # To be fixed in pass 2
         # sec_header_dict['PointerToRawData']
         section_dicts.append(sec_header_dict)
@@ -240,7 +255,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     # Generate the reloc table
     for rel_section in elf.iter_sections():
         if isinstance(rel_section, RelocationSection):
-            logging.debug('Processing section %s', rel_section.name)
+            logger.debug('Processing section %s', rel_section.name)
             # Complain on RELA
             if rel_section.is_RELA():
                 raise RuntimeError('RELA relocation is not supported.')
@@ -260,7 +275,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 
                 if type_ in (elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_ABS32'],
                              elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TARGET1']):
-                    logging.debug('Abs reloc type=%#x, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', type_, rel_target_word, sym_offset, rel_offset, rel_word_offset)
+                    logger.debug('Abs reloc type=%#x, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', type_, rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     if sym['st_info']['bind'] == 'STB_WEAK' and sym_offset == 0:
                         continue
 
@@ -374,16 +389,16 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     image_size = pos
     optional_header.SizeOfImage = align(reloc_base + reloc_memsize, 0x1000)
 
-    logging.debug("File Header:")
-    logging.debug(file_header)
-    logging.debug('Optional Header:')
-    logging.debug(optional_header)
-    logging.debug('Directory Header:')
+    logger.debug("File Header:")
+    logger.debug(file_header)
+    logger.debug('Optional Header:')
+    logger.debug(optional_header)
+    logger.debug('Directory Header:')
     for dir_ in directories:
-        logging.debug(dir_)
-    logging.debug('Section Header:')
+        logger.debug(dir_)
+    logger.debug('Section Header:')
     for sec in sections:
-        logging.debug(sec)
+        logger.debug(sec)
 
     all_headers = (
         dos_header,
@@ -416,14 +431,18 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     pe_file.truncate(0)
     pe_file.seek(0)
 
-    logging.debug('pefile objdump:\n%s', pefile_obj.dump_info())
+    logger.debug('pefile objdump:\n%s', pefile_obj.dump_info())
     for pefile_warning in pefile_obj.get_warnings():
-        logging.info('pefile warning: %s', pefile_warning)
+        logger.info('pefile warning: %s', pefile_warning)
     pe_file.write(pefile_obj.write())
 
 if __name__ == '__main__':
     _, args = parse_args()
-    logging.basicConfig(level=logging.DEBUG)
+
+    logging.basicConfig()
+    if args.log_level is not None:
+        logger.setLevel(args.log_level)
+
     if args.output is None:
         output_path = f'{os.path.splitext(args.elf)[0]}{os.path.extsep}exe'
     else:
