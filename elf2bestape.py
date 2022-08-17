@@ -46,6 +46,24 @@ def pefile_struct_from_dict(format_: PEStructureDefinition, data: Dict[str, Any]
     pe_struct.__dict__.update(data)
     return pe_struct
 
+ENUM_RELOC_NAME_ARM = {v: k for k, v in elfenums.ENUM_RELOC_TYPE_ARM.items()}
+
+AAELF_RELOC_ABSOLUTE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
+    'R_ARM_ABS32',
+    'R_ARM_TARGET1',
+))
+
+AAELF_RELOC_RELATIVE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
+    'R_ARM_PREL31',
+    'R_ARM_REL32',
+    'R_ARM_TARGET2',
+))
+
+AAELF_RELOC_IGNORE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
+    'R_ARM_CALL', # Relative offset will still be correct if we don't shift anything
+    'R_ARM_JUMP24', # Same as R_ARM_CALL
+    'R_ARM_V4BX', # just a marker for v4T BX and safe to ignore
+))
 
 EMPTY_DOS_HEADER = {
     'e_magic': pefile.IMAGE_DOS_SIGNATURE,
@@ -273,9 +291,8 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 rel_word_offset = rel_offset - rel_target_sec['sh_addr']
                 rel_target_word = int.from_bytes(rel_target_data[rel_word_offset:rel_word_offset+4], 'little')
                 
-                if type_ in (elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_ABS32'],
-                             elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TARGET1']):
-                    logger.debug('Abs reloc type=%#x, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', type_, rel_target_word, sym_offset, rel_offset, rel_word_offset)
+                if type_ in AAELF_RELOC_ABSOLUTE:
+                    logger.debug('Abs reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     if sym['st_info']['bind'] == 'STB_WEAK' and sym_offset == 0:
                         continue
 
@@ -285,11 +302,12 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     if rel_offset_hi not in reloc_dicts:
                         reloc_dicts[rel_offset_hi] = {}
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
-                elif type_ in (elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_REL32'],
-                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TARGET2'],
-                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_PREL31'],
-                               elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_TLS_IE32']):
+                elif type_ in AAELF_RELOC_RELATIVE:
                     raise RuntimeError('Relative REL is not yet implemented.')
+                elif type_ in AAELF_RELOC_IGNORE:
+                    continue
+                else:
+                    raise RuntimeError(f'Unhandled reloc type {ENUM_RELOC_NAME_ARM[type_]}')
 
     # Actually generate relocs
     generated_relocs: List[pefile.Structure] = []
