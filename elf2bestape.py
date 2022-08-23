@@ -12,6 +12,8 @@ from typing import (
     Union,
 )
 
+from collections import defaultdict
+
 import argparse
 import datetime
 import enum
@@ -53,8 +55,9 @@ AAELF_RELOC_ABSOLUTE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
     'R_ARM_TARGET1',
 ))
 
+R_ARM_PREL31 = elfenums.ENUM_RELOC_TYPE_ARM['R_ARM_PREL31']
+
 AAELF_RELOC_RELATIVE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
-    'R_ARM_PREL31',
     'R_ARM_REL32',
     'R_ARM_TARGET2',
 ))
@@ -148,17 +151,10 @@ EMPTY_SECTION_HEADER = {
 BESTAPE_MAX_HEADER_SIZE = 0x1000 # 1 memory page
 
 
-class BestaELFSegment(enum.IntEnum):
-    SEG_TEXT = 0
-    SEG_RDATA = 1
-    SEG_DATA = 2
-    TOTAL = 3
-
-
 class BestaPESection(enum.IntEnum):
-    SCN_TEXT = BestaELFSegment.SEG_TEXT
-    SCN_RDATA = BestaELFSegment.SEG_RDATA
-    SCN_DATA = BestaELFSegment.SEG_DATA
+    SCN_TEXT = 0
+    SCN_RDATA = 1
+    SCN_DATA = 2
     SCN_RELOC = 3
     TOTAL = 4
 
@@ -183,11 +179,14 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
 def generate_padding(length: int, blksize: int) -> bytes:
     return b'\x00' * (align(length, blksize) - length)
 
+def get_executable_segment(elf):
+    for idx, seg in enumerate(elf.iter_segments()):
+        if seg['p_type'] == 'PT_LOAD' and seg['p_flags'] == (elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X):
+            return idx
+    raise RuntimeError('Cannot find executable segment.')
+
 def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     elf = ELFFile(elf_file)
-
-    if (elf.num_segments()) != BestaELFSegment.TOTAL:
-        logger.error('Unexpected ELF file with %d segments (expecting %d)', elf.num_segments(), BestaELFSegment.TOTAL)
 
     # Pass 1: Setup basic PE header fields
     optional_header_dict = EMPTY_OPTIONAL_HEADER.copy()
@@ -200,8 +199,11 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     text_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     rdata_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     data_data: Optional[Union[Tuple[bytes, int], bytes]] = None
-    elf_base = elf.get_segment(BestaELFSegment.SEG_TEXT)['p_vaddr']
+    executable_seg = get_executable_segment(elf)
+    elf_base = elf.get_segment(executable_seg)['p_vaddr']
     image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
+
+    patches = {}
 
     # Generate section headers
     section_dicts = []
@@ -211,7 +213,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
         # Workaround data alignment issue in stock GCC ldscript.
         lpad = lpadding(seg['p_vaddr'] - image_base, 0x1000)
         if seg['p_type'] == 'PT_LOAD':
-            if idx == BestaELFSegment.SEG_TEXT and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X:
+            if seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X:
+                logger.info('Found segment that maps to .text at segment #%d', idx)
+                if text_data is not None:
+                    raise RuntimeError('.text section already exists.')
                 sec_header_dict['Name'] = b'.text'
                 sec_header_dict['Characteristics'] = (
                     pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_CODE'] |
@@ -221,7 +226,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 text_base = seg['p_vaddr'] - image_base
                 text_size = align(seg['p_filesz'], 0x200)
                 text_data = (seg.data(), lpad)
-            elif idx == BestaELFSegment.SEG_RDATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R:
+            elif seg['p_flags'] == elfconsts.P_FLAGS.PF_R:
+                logger.info('Found segment that maps to .rdata at segment #%d', idx)
+                if rdata_data is not None:
+                    raise RuntimeError('.rdata section already exists.')
                 sec_header_dict['Name'] = b'.rdata'
                 sec_header_dict['Characteristics'] = (
                     pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
@@ -230,7 +238,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 data_base = seg['p_vaddr'] - image_base
                 data_size += align(seg['p_filesz'], 0x200)
                 rdata_data = (seg.data(), lpad)
-            elif idx == BestaELFSegment.SEG_DATA and seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_W:
+            elif seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_W:
+                logger.info('Found segment that maps to .data at segment #%d', idx)
+                if data_data is not None:
+                    raise RuntimeError('.data section already exists.')
                 sec_header_dict['Name'] = b'.data'
                 sec_header_dict['Characteristics'] = (
                     pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
@@ -246,6 +257,8 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 reloc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
                 raise RuntimeError(f'Unknown PT_LOAD segment {idx} with flag {seg["p_flags"]:#010x}')
+        elif seg['p_type'] == 'PT_ARM_EXIDX':
+            continue
         else:
             raise RuntimeError(f'Unknown segment {seg["p_type"]}')
         sec_header_dict['Misc_VirtualSize'] = sec_header_dict['Misc_PhysicalAddress'] = sec_header_dict['Misc'] = seg['p_memsz']
@@ -269,7 +282,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     #optional_header_dict['SizeOfImage']
     #optional_header_dict['SizeOfHeaders']
 
-    reloc_dicts: Dict[int, Dict[int, int]] = {}
+    reloc_dicts: Dict[int, Dict[int, int]] = defaultdict(dict)
     # Generate the reloc table
     for rel_section in elf.iter_sections():
         if isinstance(rel_section, RelocationSection):
@@ -277,12 +290,13 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
             # Complain on RELA
             if rel_section.is_RELA():
                 raise RuntimeError('RELA relocation is not supported.')
+
             rel_target_sec = elf.get_section(rel_section['sh_info'])
             # Skip non-loadable sections
             if (rel_target_sec['sh_flags'] & elfconsts.SH_FLAGS.SHF_ALLOC) == 0:
                 continue
             rel_target_data = rel_target_sec.data()
-            # Sorta ported from 3dsxtool since we are pretty much using the 3dsx linker script
+
             for reloc in rel_section.iter_relocations():
                 symtab = elf.get_section(rel_section['sh_link'])
                 sym, type_ = symtab.get_symbol(reloc['r_info_sym']), reloc['r_info_type']
@@ -290,7 +304,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 rel_offset = reloc['r_offset']
                 rel_word_offset = rel_offset - rel_target_sec['sh_addr']
                 rel_target_word = int.from_bytes(rel_target_data[rel_word_offset:rel_word_offset+4], 'little')
-                
+
                 if type_ in AAELF_RELOC_ABSOLUTE:
                     logger.debug('Abs reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     if sym['st_info']['bind'] == 'STB_WEAK' and sym_offset == 0:
@@ -299,11 +313,30 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     assert rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
                     rel_offset_hi = rel_offset & 0xfffff000
                     rel_offset_lo = rel_offset & 0x00000fff
-                    if rel_offset_hi not in reloc_dicts:
-                        reloc_dicts[rel_offset_hi] = {}
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
+
+                elif type_ == R_ARM_PREL31:
+                    is_exidx_compact = bool(rel_target_word & 0x80000000)
+                    if is_exidx_compact:
+                        continue
+
+                    rel_target_word &= 0x7fffffff
+                    # sign extend
+                    prel31_off_signext = ((rel_target_word | 0x80000000) if (rel_target_word & 0x40000000) else rel_target_word)
+                    prel31_off = int.from_bytes(prel31_off_signext.to_bytes(4, 'little'), 'little', signed=True)
+                    new_rel_target_word = rel_offset + prel31_off
+                    logger.debug('PREL31 reloc type=%s, value=%#x (abs=%#010x), sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], prel31_off, new_rel_target_word, sym_offset, rel_offset, rel_word_offset)
+                    assert new_rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
+                    patches[rel_offset] = new_rel_target_word.to_bytes(4, 'little')
+
+                    rel_offset_hi = rel_offset & 0xfffff000
+                    rel_offset_lo = rel_offset & 0x00000fff
+                    reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
+
                 elif type_ in AAELF_RELOC_RELATIVE:
+                    logger.debug('Rel reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     raise RuntimeError('Relative REL is not yet implemented.')
+
                 elif type_ in AAELF_RELOC_IGNORE:
                     continue
                 else:
@@ -445,6 +478,11 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     # Pass 3: using pefile for some fixing and linting
     pefile_obj = pefile.PE(data=pe_file.getvalue())
     pefile_obj.OPTIONAL_HEADER.CheckSum = pefile_obj.generate_checksum()
+
+    for offset, val in patches.items():
+        rva = offset - image_base
+        logger.debug('Postprocessing: patch %d bytes at %#010x (RVA %#010x)', len(val), offset, rva)
+        pefile_obj.set_bytes_at_rva(rva, val)
 
     pe_file.truncate(0)
     pe_file.seek(0)
