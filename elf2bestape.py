@@ -29,7 +29,7 @@ from elftools.elf import enums as elfenums
 from elftools.elf.relocation import RelocationSection
 
 
-ELF2BESTAPE_VERSION = (0, 1, 0)
+ELF2BESTAPE_VERSION = (0, 2, 0)
 
 
 logger = logging.getLogger('elf2bestape')
@@ -64,8 +64,10 @@ AAELF_RELOC_RELATIVE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
 
 AAELF_RELOC_IGNORE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
     'R_ARM_CALL', # Relative offset will still be correct if we don't shift anything
+    'R_ARM_THM_CALL', # Same as above
     'R_ARM_JUMP24', # Same as R_ARM_CALL
     'R_ARM_V4BX', # just a marker for v4T BX and safe to ignore
+    'R_ARM_NONE', # Doesn't seem to be useful in an executable image
 ))
 
 EMPTY_DOS_HEADER = {
@@ -203,7 +205,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     elf_base = elf.get_segment(executable_seg)['p_vaddr']
     image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
 
-    patches = {}
+    patches: Dict[int, bytes] = {}
 
     # Generate section headers
     section_dicts = []
@@ -297,6 +299,11 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 continue
             rel_target_data = rel_target_sec.data()
 
+            if rel_section.name in ('.rel.ARM.exidx', '.rel.ARM.extab'):
+                # exidx and extab are relocated by libgcc's unwind routine. Do nothing here.
+                logger.info('Skipping exception related section.')
+                continue
+
             for reloc in rel_section.iter_relocations():
                 symtab = elf.get_section(rel_section['sh_link'])
                 sym, type_ = symtab.get_symbol(reloc['r_info_sym']), reloc['r_info_type']
@@ -304,6 +311,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 rel_offset = reloc['r_offset']
                 rel_word_offset = rel_offset - rel_target_sec['sh_addr']
                 rel_target_word = int.from_bytes(rel_target_data[rel_word_offset:rel_word_offset+4], 'little')
+
+                if rel_word_offset < 0 or rel_word_offset >= len(rel_target_data):
+                    logger.info('Ignoring out of bound symbol @ %#x', rel_word_offset)
+                    continue
 
                 if type_ in AAELF_RELOC_ABSOLUTE:
                     logger.debug('Abs reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
@@ -316,6 +327,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
 
                 elif type_ == R_ARM_PREL31:
+                    logger.warning('Flatterning non-exception PREL31. This is probably unnecessary and harmful.')
                     is_exidx_compact = bool(rel_target_word & 0x80000000)
                     if is_exidx_compact:
                         continue
@@ -325,6 +337,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     prel31_off_signext = ((rel_target_word | 0x80000000) if (rel_target_word & 0x40000000) else rel_target_word)
                     prel31_off = int.from_bytes(prel31_off_signext.to_bytes(4, 'little'), 'little', signed=True)
                     new_rel_target_word = rel_offset + prel31_off
+
                     logger.debug('PREL31 reloc type=%s, value=%#x (abs=%#010x), sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], prel31_off, new_rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     assert new_rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
                     patches[rel_offset] = new_rel_target_word.to_bytes(4, 'little')
@@ -334,8 +347,17 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
 
                 elif type_ in AAELF_RELOC_RELATIVE:
-                    logger.debug('Rel reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
-                    raise RuntimeError('Relative REL is not yet implemented.')
+                    logger.warning('Flatterning relative reloc. This is probably unnecessary and harmful.')
+                    rel_target_off = int.from_bytes(rel_target_word.to_bytes(4, 'little'), 'little', signed=True)
+                    new_rel_target_word = rel_offset + rel_target_off
+
+                    logger.debug('Rel reloc type=%s, value=%#x (abs=%#010x), sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_off, new_rel_target_word, sym_offset, rel_offset, rel_word_offset)
+                    assert new_rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
+                    patches[rel_offset] = new_rel_target_word.to_bytes(4, 'little')
+
+                    rel_offset_hi = rel_offset & 0xfffff000
+                    rel_offset_lo = rel_offset & 0x00000fff
+                    reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
 
                 elif type_ in AAELF_RELOC_IGNORE:
                     continue
