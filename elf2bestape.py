@@ -68,6 +68,7 @@ AAELF_RELOC_IGNORE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
     'R_ARM_JUMP24', # Same as R_ARM_CALL
     'R_ARM_V4BX', # just a marker for v4T BX and safe to ignore
     'R_ARM_NONE', # Doesn't seem to be useful in an executable image
+    'R_ARM_TLS_LE32', # TODO is this really the right thing to do?
 ))
 
 EMPTY_DOS_HEADER = {
@@ -259,7 +260,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 reloc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
                 raise RuntimeError(f'Unknown PT_LOAD segment {idx} with flag {seg["p_flags"]:#010x}')
-        elif seg['p_type'] == 'PT_ARM_EXIDX':
+        elif seg['p_type'] in ('PT_ARM_EXIDX', 'PT_TLS'):
             continue
         else:
             raise RuntimeError(f'Unknown segment {seg["p_type"]}')
