@@ -69,6 +69,7 @@ AAELF_RELOC_IGNORE = tuple(elfenums.ENUM_RELOC_TYPE_ARM[n] for n in (
     'R_ARM_V4BX', # just a marker for v4T BX and safe to ignore
     'R_ARM_NONE', # Doesn't seem to be useful in an executable image
     'R_ARM_TLS_LE32', # TODO is this really the right thing to do?
+    'R_ARM_TLS_IE32', # PC relative offset and should be handled by GCC codegen
 ))
 
 EMPTY_DOS_HEADER = {
