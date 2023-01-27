@@ -301,7 +301,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                 continue
             rel_target_data = rel_target_sec.data()
 
-            if rel_section.name in ('.rel.ARM.exidx', '.rel.ARM.extab'):
+            if rel_section.name in ('.rel.ARM.exidx', '.rel.ARM.extab', '.rel.eh_frame'):
                 # exidx and extab are relocated by libgcc's unwind routine. Do nothing here.
                 logger.info('Skipping exception related section.')
                 continue
