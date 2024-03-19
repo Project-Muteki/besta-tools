@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Postlinker and tools for Besta PE"
 authors = ["dogtopus <dogtopus@users.noreply.github.com>"]
 license = "MIT"
+readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
@@ -16,5 +17,8 @@ pylint = "^2.11.1"
 mypy = "^0.910"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+elf2bestape = 'bestape_postlink.elf2bestape:main'

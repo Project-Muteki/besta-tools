@@ -516,7 +516,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
         logger.info('pefile warning: %s', pefile_warning)
     pe_file.write(pefile_obj.write())
 
-if __name__ == '__main__':
+def main():
     _, args = parse_args()
 
     logging.basicConfig()
@@ -533,3 +533,6 @@ if __name__ == '__main__':
     with open(output_path, 'wb') as actual_pe_file:
         pe_file.seek(0)
         shutil.copyfileobj(pe_file, actual_pe_file)
+
+if __name__ == '__main__':
+    main()
