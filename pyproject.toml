@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "bestape-postlink"
+name = "besta-tools"
 version = "0.1.0"
-description = "Postlinker and tools for Besta PE"
+description = "Tools for working with Besta data formats"
 authors = ["dogtopus <dogtopus@users.noreply.github.com>"]
 license = "MIT"
 readme = "README.md"
@@ -22,5 +22,5 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-elf2bestape = 'bestape_postlink.elf2bestape:main'
-titlemgr = 'bestape_postlink.titlemgr:main'
+elf2bestape = 'besta_tools.elf2bestape:main'
+titlemgr = 'besta_tools.titlemgr:main'
