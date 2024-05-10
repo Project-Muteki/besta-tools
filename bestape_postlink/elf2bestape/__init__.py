@@ -173,10 +173,10 @@ def lpadding(pos: int, blksize: int) -> int:
     return pos - (pos // blksize * blksize)
 
 def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
-    p = argparse.ArgumentParser(description='Post-linker for Besta PE files.')
-    p.add_argument('elf', help='Input ELF file.')
+    p = argparse.ArgumentParser(description='Generate Besta PE file from an AAELF file.')
+    p.add_argument('elf', help='Input AAELF file.')
     p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
-    p.add_argument('-o', '--output', help='Besta PE file to output (or ELF\'s basename + .exe if not supplied).')
+    p.add_argument('-o', '--output', help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
     p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
     return p, p.parse_args()
 
