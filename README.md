@@ -1,3 +1,3 @@
-# bestape-postlink
+# besta-tools
 
-Postlinker (and maybe other tools in the future) for Besta PE files.
+Tools for working with Besta data formats.
