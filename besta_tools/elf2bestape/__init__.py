@@ -178,6 +178,7 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
     p.add_argument('-o', '--output', help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
     p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
+    p.add_argument('--force-flattern-rel', action='store_true', default=False, help='Force the conversion of all general relative relocations to absolute. For testing only and normally should not be used.')
     return p, p.parse_args()
 
 def generate_padding(length: int, blksize: int) -> bytes:
@@ -328,7 +329,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     rel_offset_lo = rel_offset & 0x00000fff
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
 
-                elif type_ == R_ARM_PREL31:
+                elif type_ == R_ARM_PREL31 and args.force_flattern_rel:
                     logger.warning('Flatterning non-exception PREL31. This is probably unnecessary and harmful.')
                     is_exidx_compact = bool(rel_target_word & 0x80000000)
                     if is_exidx_compact:
@@ -347,8 +348,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     rel_offset_hi = rel_offset & 0xfffff000
                     rel_offset_lo = rel_offset & 0x00000fff
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
+                elif type_ == R_ARM_PREL31:
+                    logger.info('Ignoring non-exception PREL31 (%#010x @ %#010x).', rel_target_word, rel_offset)
 
-                elif type_ in AAELF_RELOC_RELATIVE:
+                elif type_ in AAELF_RELOC_RELATIVE and args.force_flattern_rel:
                     logger.warning('Flatterning relative reloc. This is probably unnecessary and harmful.')
                     rel_target_off = int.from_bytes(rel_target_word.to_bytes(4, 'little'), 'little', signed=True)
                     new_rel_target_word = rel_offset + rel_target_off
@@ -360,6 +363,8 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     rel_offset_hi = rel_offset & 0xfffff000
                     rel_offset_lo = rel_offset & 0x00000fff
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
+                elif type_ in AAELF_RELOC_RELATIVE:
+                    logger.info('Ignoring relative reloc (%#010x @ %#010x).', rel_target_word, rel_offset)
 
                 elif type_ in AAELF_RELOC_IGNORE:
                     continue
