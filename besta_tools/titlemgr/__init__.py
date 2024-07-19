@@ -1,22 +1,11 @@
-from typing import TextIO, BinaryIO, Any, Self, Optional
+from typing import TextIO, BinaryIO, Any, Self, Optional, Literal
 
 import click
 import dataclasses
 import pathlib
 import sys
 
-
-def simple_checksum(input_file: BinaryIO) -> int:
-    buf = bytearray(1024)
-    buf_mv = memoryview(buf)
-    checksum = 0
-    while True:
-        actual = input_file.readinto(buf)
-        if actual == 0:
-            break
-        else:
-            checksum += sum(buf_mv[:actual])
-    return checksum & 0xffff
+from ..common.utils import simple_checksum
 
 
 def relative_to_root(path: pathlib.PureWindowsPath) -> pathlib.PureWindowsPath:
@@ -65,10 +54,12 @@ class TitleIndex:
         return cls(version, overall_checksum, entries)
 
     def dump(self) -> str:
-        result: list[str] = []
-        result.append(self.version)
-        result.append(f'{self.overall_checksum:#06x}')
-        result.append(f'{len(self.entries):>6}')
+        result: list[str] = [
+            self.version,
+            f'{self.overall_checksum:#06x}',
+            f'{len(self.entries):>6}'
+        ]
+
         for entry in self.entries:
             result.append(entry.path)
             result.append(f'{entry.checksum:#06x}')
