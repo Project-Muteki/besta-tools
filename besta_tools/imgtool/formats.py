@@ -2,18 +2,17 @@ from typing import BinaryIO, Self, cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from construct import Context
 
-import dataclasses
+from dataclasses import dataclass, field
 from pathlib import Path
+
+import yaml
 
 from construct import (
     Array,
-    Byte,
-    Bytes,
     Computed,
     Const,
     Check,
     IfThenElse,
-    Int16ul,
     Int32ul,
     Int64ul,
     PaddedString,
@@ -22,7 +21,9 @@ from construct import (
     this,
     len_
 )
-from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, csfield
+from construct_typed import DataclassMixin, DataclassStruct, csfield
+from marshmallow_dataclass import dataclass as mm_dataclass
+from marshmallow_dataclass import class_schema as mm_class_schema
 
 from ..common.formats import CsChecksumValue, ChecksumValue
 from ..common.utils import simple_checksum
@@ -46,7 +47,7 @@ def _inv_u16_per_byte(ctx: 'Context') -> int:
     return (((0x100 - hi) & 0xff) << 8) | ((0x100 - lo) & 0xff)
 
 
-@dataclasses.dataclass
+@dataclass
 class ImageMetadataV2(DataclassMixin):
     image_name: str = csfield(PaddedString(16, 'ascii'))
     image_version: str = csfield(PaddedString(16, 'ascii'))
@@ -67,7 +68,7 @@ class ImageMetadataV2(DataclassMixin):
 CsImageMetadataV2 = DataclassStruct(ImageMetadataV2)
 
 
-@dataclasses.dataclass
+@dataclass
 class ImageIndexEntryV2(DataclassMixin):
     offset: int = csfield(Int64ul)
     size: int = csfield(Int64ul)
@@ -77,11 +78,20 @@ class ImageIndexEntryV2(DataclassMixin):
 CsImageIndexEntryV2 = DataclassStruct(ImageIndexEntryV2)
 
 
-@dataclasses.dataclass
+IMAGE_INDEX_V2_VERSIONS: set[int] = {
+    0x20090828,
+    0x20081202,
+}
+
+
+@dataclass
 class ImageIndexV2(DataclassMixin):
     magic: bytes = csfield(Const(IMAGE_INDEX_V2_MAGIC))
     header_size: int = csfield(Const(0x40, Int32ul))
-    format_version: int = csfield(Const(0x20090828, Int32ul))
+    format_version: int = csfield(Int32ul)
+    _integrity_supported_format_version: None = csfield(Check(
+        lambda ctx: ctx.format_version in IMAGE_INDEX_V2_VERSIONS
+    ))
     nentries: int = csfield(Rebuild(Int32ul, len_(this.entries)))
     _padding_0x10: None = csfield(Padding(0x30))
     entries: list[ImageIndexEntryV2] = csfield(Array(this.nentries, CsImageIndexEntryV2))
@@ -90,11 +100,54 @@ class ImageIndexV2(DataclassMixin):
 CsImageIndexV2 = DataclassStruct(ImageIndexV2)
 
 
-@dataclasses.dataclass
+@mm_dataclass
+class ImageManifestSection:
+    path: str
+    align: int = field(default=1, metadata={'required': False})
+
+
+@mm_dataclass
+class ImageManifest:
+    header_format_version: int
+    index_format_version: int
+    name: str
+    version_string: str
+    block_size: int
+    checksum_block_size: int
+    sections: list[ImageManifestSection]
+
+
+MmImageManifest = mm_class_schema(ImageManifest)
+
+
+@dataclass
 class ImageFileV2:
     path: Path
-    metadata: ImageMetadataV2
-    index: ImageIndexV2
+    metadata: ImageMetadataV2 | None = field(default=None)
+    index: ImageIndexV2 | None = field(default=None)
+    manifest: ImageManifest | None = field(default=None)
+
+    def __post_init__(self):
+        if self.manifest is None:
+            self._build_manifest()
+
+    def _build_manifest(self):
+        with self.path.open('rb') as f:
+            guessed_block_size = guess_block_size_image_v2(f)
+
+        sections: list[ImageManifestSection] = [
+            ImageManifestSection(f'sections/{i:08x}.bin') for i in range(self.index.nentries)
+        ]
+
+        self.manifest = ImageManifest(
+            2,
+            self.index.format_version,
+            self.metadata.image_name,
+            self.metadata.image_version,
+            guessed_block_size,
+            self.metadata.checksum_block_size,
+            sections
+        )
 
     @classmethod
     def load(cls, image_path: str | Path) -> Self:
@@ -105,7 +158,32 @@ class ImageFileV2:
             metadata = CsImageMetadataV2.parse_stream(f)
             f.seek(block1_offset)
             index = CsImageIndexV2.parse_stream(f)
-        return cls(image_path, metadata, index)
+
+        return cls(image_path, metadata=metadata, index=index)
+
+    def build(self, output: str | Path) -> None:
+        ...
+
+    def extract(self, output: str | Path) -> None:
+        output = Path(output)
+        output.mkdir(exist_ok=True)
+        with (output / 'manifest.yaml').open('w') as manifest_file:
+            yaml.safe_dump(MmImageManifest().dump(self.manifest), manifest_file, sort_keys=False)
+        with self.path.open('rb') as image_file:
+            for section, entry in zip(self.manifest.sections, self.index.entries):
+                section_file_path = output / section.path
+                section_file_path.parent.mkdir(exist_ok=True)
+                with section_file_path.open('wb') as section_file:
+                    image_file.seek(entry.offset)
+                    bytes_left: int = entry.size
+                    while bytes_left > 0:
+                        bytes_to_read = min(4096, bytes_left)
+                        section_file.write(image_file.read(bytes_to_read))
+                        bytes_left -= bytes_to_read
+
+    @classmethod
+    def from_manifest(cls, manifest_path: str | Path) -> Self:
+        ...
 
     def verify(self) -> list[bool]:
         results: list[bool] = []

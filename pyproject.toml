@@ -12,11 +12,17 @@ pefile = "^2021.9.3"
 pyelftools = "^0.27"
 click = "^8.1.7"
 construct-typing = "^0.6.2"
+marshmallow-dataclass = "^8.7.0"
+pyyaml = "^6.0.1"
 
 [tool.poetry.dev-dependencies]
 rope = "^0.20.1"
 pylint = "^2.11.1"
 mypy = "^0.910"
+
+[tool.poetry.group.dev.dependencies]
+ipython = "^8.26.0"
+types-pyyaml = "^6.0.12.20240311"
 
 [build-system]
 requires = ["poetry-core"]
