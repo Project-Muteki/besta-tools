@@ -36,6 +36,19 @@ class MagicType(EnumBase):
 
 
 @dataclasses.dataclass
+class RomSpecTimestamp(DataclassMixin):
+    year: int = csfield(Int16ul)
+    month: int = csfield(Int16ul)
+    day: int = csfield(Int16ul)
+    hour: int = csfield(Int16ul)
+    minute: int = csfield(Int16ul)
+    second: int = csfield(Int16ul)
+
+
+CsRomSpecTimestamp = DataclassStruct(RomSpecTimestamp)
+
+
+@dataclasses.dataclass
 class RomSpecType(DataclassMixin):
     magic: int = csfield(Int16ul)
     spec_size: int = csfield(Const(0x80, Int16ul))
@@ -44,6 +57,27 @@ class RomSpecType(DataclassMixin):
     unk_0xa: int = csfield(Int16ul)
     default_locale: int = csfield(CsRomLocale)
     sections_offset: int = csfield(Int16ul)
+    build_timestamp: RomSpecTimestamp = csfield(CsRomSpecTimestamp)
+    rom_size: int = csfield(Int32ul)
+    entry_point: int = csfield(Int32ul)
+    fallback_title_offset: int = csfield(Int32ul)
+    copyright_offset: int = csfield(Int32ul)
+    icon_offset: int = csfield(Int32ul)
+    version_offset: int = csfield(Int32ul)
+    data_offset: int = csfield(Int32ul)
+    sdk_id_offset: int = csfield(Int32ul)
+    unk_0x3c: int = csfield(Int32ul)
+    unk_0x40: int = csfield(Int32ul)
+    type_str_offset: int = csfield(Int32ul)
+    unk_0x48: int = csfield(Int32ul)
+    unk_0x4c: int = csfield(Int16ul)
+    unk_0x4e: int = csfield(Int16ul)
+    localized_title_offset: int = csfield(Int32ul)
+    unk_0x54: int = csfield(Int32ul)
+    unk_0x58: int = csfield(Int32ul)
+    subtype: int = csfield(Int32ul)
+    unk_0x60: int = csfield(Int32ul)
+    unk_0x64: list[int] = csfield(Array(7, Int32ul))
 
 
 @dataclasses.dataclass
