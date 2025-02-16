@@ -32,3 +32,4 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 elf2bestape = 'besta_tools.elf2bestape:main'
 titlemgr = 'besta_tools.titlemgr:main'
+romtool = 'besta_tools.romtool:app'
