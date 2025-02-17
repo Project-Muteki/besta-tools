@@ -28,6 +28,7 @@ from elftools.elf import constants as elfconsts
 from elftools.elf import enums as elfenums
 from elftools.elf.relocation import RelocationSection
 
+from besta_tools.common.utils import BinaryBuilder
 
 ELF2BESTAPE_VERSION = (0, 2, 0)
 
@@ -43,10 +44,17 @@ def parse_loglevel(level: str) -> Union[int, str]:
 
 PEStructureDefinition = Tuple[str, Sequence[str]]
 
+
+def pefile_struct_calcsize(format_: PEStructureDefinition) -> int:
+    pe_struct = pefile.Structure(format_)
+    return pe_struct.sizeof()
+
+
 def pefile_struct_from_dict(format_: PEStructureDefinition, data: Dict[str, Any], name: Optional[str] = None, file_offset: Optional[int] = None) -> pefile.Structure:
     pe_struct = pefile.Structure(format_, name, file_offset)
     pe_struct.__dict__.update(data)
     return pe_struct
+
 
 ENUM_RELOC_NAME_ARM = {v: k for k, v in elfenums.ENUM_RELOC_TYPE_ARM.items()}
 
@@ -152,7 +160,41 @@ EMPTY_SECTION_HEADER = {
     "Characteristics": 0, # pefile.SECTION_CHARACTERISTICS
 }
 
+EMPTY_IMAGE_RESOURCE_DIRECTORY = {
+    'Characteristics': 0,
+    'TimeDateStamp': 0,
+    'MajorVersion': 0,
+    'MinorVersion': 0,
+    'NumberOfNamedEntries': 0,
+    'NumberOfIdEntries': 0,
+}
+
+EMPTY_IMAGE_RESOURCE_DIRECTORY_ENTRY = {
+    'Name': 0x0,
+    'OffsetToData': 0x0,
+}
+
+EMPTY_IMAGE_RESOURCE_DATA_ENTRY = {
+    'OffsetToData': 0x0,
+    'Size': 0x0,
+    'CodePage': 0x0,
+    'Reserved': 0x0,
+}
+
+IMAGE_RESOURCE_DIRECTORY_SIZE = pefile_struct_calcsize(pefile.PE.__IMAGE_RESOURCE_DIRECTORY_format__)
+IMAGE_RESOURCE_DIRECTORY_ENTRY_SIZE = pefile_struct_calcsize(pefile.PE.__IMAGE_RESOURCE_DIRECTORY_ENTRY_format__)
+IMAGE_RESOURCE_DATA_ENTRY_SIZE = pefile_struct_calcsize(pefile.PE.__IMAGE_RESOURCE_DATA_ENTRY_format__)
+
+RSRC_STR_BIN = 'BIN'
+RSRC_STR_ROMSPC = 'ROMSPC'
+RSRC_NAME_BIN = len(RSRC_STR_BIN).to_bytes(2, 'little') + RSRC_STR_BIN.encode('utf-16le')
+RSRC_NAME_ROMSPC = len(RSRC_STR_ROMSPC).to_bytes(2, 'little') + RSRC_STR_ROMSPC.encode('utf-16le')
+RSRC_NAME_NIL = (0).to_bytes(2, 'little')
+
+IMAGE_RESOURCE_DIRECTORY_ENTRY_ISDIR = IMAGE_RESOURCE_DIRECTORY_ENTRY_ISNAME = 0x80000000
+
 BESTAPE_MAX_HEADER_SIZE = 0x1000 # 1 memory page
+BESTAPE_MAX_ROMSPEC_SIZE = 0x8000 # 8 memory page or 32KiB
 
 
 class BestaPESection(enum.IntEnum):
@@ -177,6 +219,7 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p.add_argument('elf', help='Input AAELF file.')
     p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
     p.add_argument('-o', '--output', help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
+    p.add_argument('-r', '--romspec-file', help='Include binary ROM spec file to make Type 2 ROM file.')
     p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
     p.add_argument('--force-flattern-rel', action='store_true', default=False, help='Force the conversion of all general relative relocations to absolute. For testing only and normally should not be used.')
     return p, p.parse_args()
@@ -190,7 +233,7 @@ def get_executable_segment(elf):
             return idx
     raise RuntimeError('Cannot find executable segment.')
 
-def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
+def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], args: argparse.Namespace):
     elf = ELFFile(elf_file)
 
     # Pass 1: Setup basic PE header fields
@@ -200,10 +243,12 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     text_size = 0
     data_size = 0
     bss_size = 0
+    rsrc_base = 0
     reloc_base = 0
     text_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     rdata_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     data_data: Optional[Union[Tuple[bytes, int], bytes]] = None
+    rsrc_data: Optional[Union[Tuple[bytes, int], bytes]] = None
     executable_seg = get_executable_segment(elf)
     elf_base = elf.get_segment(executable_seg)['p_vaddr']
     image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
@@ -259,7 +304,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
                     sec_header_dict['Characteristics'] |= pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_UNINITIALIZED_DATA']
                 data_data = (seg.data(), lpad)
                 # PE relocation table begins after the end of all ELF segments.
-                reloc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
+                rsrc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
                 raise RuntimeError(f'Unknown PT_LOAD segment {idx} with flag {seg["p_flags"]:#010x}')
         elif seg['p_type'] in ('PT_ARM_EXIDX', 'PT_TLS'):
@@ -286,6 +331,130 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
     # To be fixed in pass 2
     #optional_header_dict['SizeOfImage']
     #optional_header_dict['SizeOfHeaders']
+
+    if romspec is not None:
+        # Generate rsrc data
+        rsrc_emitter = BinaryBuilder()
+
+        # /
+        rsrc_root_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY.copy()
+        rsrc_root_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_SIZE)
+
+        # /BIN
+        rsrc_root_dict['NumberOfNamedEntries'] += 1
+        rsrc_bin_entry_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY_ENTRY.copy()
+        rsrc_bin_entry_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_ENTRY_SIZE)
+
+        rsrc_bin_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY.copy()
+        rsrc_bin_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_SIZE)
+        rsrc_bin_entry_dict['OffsetToData'] = IMAGE_RESOURCE_DIRECTORY_ENTRY_ISDIR | rsrc_bin_fragment.offset
+
+        # /BIN/ROMSPC
+        rsrc_bin_dict['NumberOfNamedEntries'] += 1
+        rsrc_bin_romspc_entry_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY_ENTRY.copy()
+        rsrc_bin_romspc_entry_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_ENTRY_SIZE)
+
+        rsrc_bin_romspc_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY.copy()
+        rsrc_bin_romspc_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_SIZE)
+        rsrc_bin_romspc_entry_dict['OffsetToData'] = IMAGE_RESOURCE_DIRECTORY_ENTRY_ISDIR | rsrc_bin_romspc_fragment.offset
+
+        # /BIN/ROMSPC/0x0401
+        rsrc_bin_romspc_dict['NumberOfIdEntries'] += 1
+        rsrc_bin_romspc_0404_entry_dict = EMPTY_IMAGE_RESOURCE_DIRECTORY_ENTRY.copy()
+        rsrc_bin_romspc_0404_entry_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DIRECTORY_ENTRY_SIZE)
+
+        rsrc_bin_romspc_0404_data_entry_dict = EMPTY_IMAGE_RESOURCE_DATA_ENTRY.copy()
+        rsrc_bin_romspc_0404_data_entry_fragment = rsrc_emitter.append(IMAGE_RESOURCE_DATA_ENTRY_SIZE)
+        rsrc_bin_romspc_0404_entry_dict['OffsetToData'] = rsrc_bin_romspc_0404_data_entry_fragment.offset
+
+        # Set up IDs and names
+        rsrc_name_bin_fragment = rsrc_emitter.append(len(RSRC_NAME_BIN))
+        rsrc_name_bin_fragment.set_data(RSRC_NAME_BIN)
+        rsrc_bin_entry_dict['Name'] = IMAGE_RESOURCE_DIRECTORY_ENTRY_ISNAME | rsrc_name_bin_fragment.offset
+
+        rsrc_name_romspc_fragment = rsrc_emitter.append(len(RSRC_NAME_ROMSPC))
+        rsrc_name_romspc_fragment.set_data(RSRC_NAME_ROMSPC)
+        rsrc_bin_romspc_entry_dict['Name'] = IMAGE_RESOURCE_DIRECTORY_ENTRY_ISNAME | rsrc_name_romspc_fragment.offset
+
+        _rsrc_name_nil_fragment = rsrc_emitter.append(len(RSRC_NAME_NIL))
+        _rsrc_name_nil_fragment.set_data(RSRC_NAME_NIL)
+
+        rsrc_bin_romspc_0404_entry_dict['Name'] = 0x0404
+
+        rsrc_romspc_data_fragment = rsrc_emitter.append(len(romspec))
+        rsrc_bin_romspc_0404_data_entry_dict['OffsetToData'] = rsrc_base + rsrc_romspc_data_fragment.offset
+        rsrc_bin_romspc_0404_data_entry_dict['Size'] = rsrc_romspc_data_fragment.size
+
+        # Serialize headers
+        rsrc_root_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_format__,
+            rsrc_root_dict,
+            file_offset=rsrc_base + rsrc_root_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_entry_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_ENTRY_format__,
+            rsrc_bin_entry_dict,
+            file_offset=rsrc_base + rsrc_bin_entry_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_format__,
+            rsrc_bin_dict,
+            file_offset=rsrc_base + rsrc_bin_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_romspc_entry_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_ENTRY_format__,
+            rsrc_bin_romspc_entry_dict,
+            file_offset=rsrc_base + rsrc_bin_romspc_entry_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_romspc_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_format__,
+            rsrc_bin_romspc_dict,
+            file_offset=rsrc_base + rsrc_bin_romspc_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_romspc_0404_entry_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DIRECTORY_ENTRY_format__,
+            rsrc_bin_romspc_0404_entry_dict,
+            file_offset=rsrc_base + rsrc_bin_romspc_0404_entry_fragment.offset,
+        ).__pack__())
+
+        rsrc_bin_romspc_0404_data_entry_fragment.set_data(pefile_struct_from_dict(
+            pefile.PE.__IMAGE_RESOURCE_DATA_ENTRY_format__,
+            rsrc_bin_romspc_0404_data_entry_dict,
+            file_offset=rsrc_base + rsrc_bin_romspc_0404_data_entry_fragment.offset,
+        ).__pack__())
+
+        rsrc_romspc_data_fragment.set_data(romspec)
+
+        rsrc_data = (rsrc_emitter.concat(), 0)
+
+    if rsrc_data is not None:
+        # Calculate rsrc allocation size
+        rsrc_memsize = len(rsrc_data[0])
+        rsrc_size = align(rsrc_memsize, 0x200)
+        rsrc_vsize = align(rsrc_memsize, 0x1000)
+        logger.debug('rsrc_memsize = %s, rsrc_vsize = %s', hex(rsrc_memsize), hex(rsrc_vsize))
+    else:
+        rsrc_memsize = rsrc_size = rsrc_vsize = 0
+
+    if rsrc_data is not None:
+        # Append rsrc header
+        rsrc_section_header = EMPTY_SECTION_HEADER.copy()
+        rsrc_section_header['Name'] = b'.rsrc'
+        rsrc_section_header['Characteristics'] = (
+            pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_INITIALIZED_DATA'] |
+                pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_MEM_READ']
+        )
+        rsrc_section_header['Misc_VirtualSize'] = rsrc_section_header['Misc_PhysicalAddress'] = rsrc_section_header['Misc'] = rsrc_memsize
+        rsrc_section_header['VirtualAddress'] = rsrc_base
+        rsrc_section_header['SizeOfRawData'] = rsrc_size
+        section_dicts.append(rsrc_section_header)
+
+    reloc_base = rsrc_base + rsrc_vsize
 
     reloc_dicts: Dict[int, Dict[int, int]] = defaultdict(dict)
     # Generate the reloc table
@@ -443,6 +612,9 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
         pos += dir_.sizeof()
         directories.append(dir_)
 
+    if rsrc_data is not None:
+        directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_RESOURCE']].VirtualAddress = rsrc_base
+        directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_RESOURCE']].Size = rsrc_memsize
     directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].VirtualAddress = reloc_base
     directories[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_BASERELOC']].Size = reloc_memsize
 
@@ -494,7 +666,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, args: argparse.Namespace):
 
     pe_file.write(generate_padding(pe_file.tell(), 0x200))
 
-    for data in (text_data, rdata_data, data_data, reloc_data):
+    for data in (text_data, rdata_data, data_data, rsrc_data, reloc_data):
         if data is not None:
             lpad = data[1]
             if lpad != 0:
@@ -532,9 +704,18 @@ def main():
         output_path = f'{os.path.splitext(args.elf)[0]}{os.path.extsep}exe'
     else:
         output_path = args.output
+
+    if args.romspec_file is not None:
+        if os.stat(args.romspec_file).st_size > BESTAPE_MAX_ROMSPEC_SIZE:
+            raise RuntimeError('Refusing to link ROM spec file of size greater than 32KiB.')
+        with open(args.romspec_file, 'rb') as romspec_file:
+            romspec = romspec_file.read()
+    else:
+        romspec = None
+
     with open(args.elf, 'rb') as elf_file:
         pe_file = io.BytesIO()
-        convert(elf_file, pe_file, args)
+        convert(elf_file, pe_file, romspec, args)
     with open(output_path, 'wb') as actual_pe_file:
         pe_file.seek(0)
         shutil.copyfileobj(pe_file, actual_pe_file)

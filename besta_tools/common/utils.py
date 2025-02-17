@@ -1,5 +1,42 @@
 from typing import BinaryIO
+from dataclasses import dataclass
 import io
+
+
+@dataclass
+class Fragment:
+    offset: int
+    size: int
+    data: bytes | bytearray | memoryview | None = None
+
+    def set_data(self, data: bytes | bytearray | memoryview):
+        if self.size != len(data):
+            raise ValueError('Size mismatch.')
+        self.data = data
+
+
+class BinaryBuilder:
+    _fragments: list[Fragment]
+    _last_offset: int
+
+    def __init__(self, base: int = 0):
+        self._fragments = []
+        self._last_offset = base
+
+    def append(self, size: int) -> Fragment:
+        result = Fragment(self._last_offset, size, None)
+        self._fragments.append(result)
+        self._last_offset += size
+        return result
+
+    def concat(self) -> bytes:
+        result = io.BytesIO()
+        for fragment in self._fragments:
+            result.write(fragment.data)
+        return result.getvalue()
+
+    def sizeof(self):
+        return self._last_offset
 
 
 def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:

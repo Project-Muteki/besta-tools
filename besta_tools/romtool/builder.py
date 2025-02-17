@@ -1,13 +1,12 @@
 from typing import Final, TypedDict, NotRequired, Sequence, cast, Mapping
 
 import io
-import dataclasses
 
 from .formats import RomExtMetadataHeader, CsRomSpecType, CsRomExtMetadataHeader, CsRomLocalizedTitle, \
     CsRomLocalizedTitleEntry, CsRomFallbackTitle, RomLocalizedTitle, RomLocale, RomFallbackTitle, RomSpecType, \
     MagicType, RomType, RomSpecTimestamp, RomLocalizedTitleEntry
 from ..common.formats import ChecksumValue
-from ..common.utils import simple_checksum
+from ..common.utils import simple_checksum, Fragment, BinaryBuilder
 
 LOCALE_MAPPING: Final[dict[str, RomLocale]] = {
     'zh_CN': RomLocale.ZH_CN,
@@ -43,49 +42,13 @@ class SpecToml(TypedDict):
     metadata: NotRequired[Mapping[str, SpecTomlMetadataElement]]
 
 
-@dataclasses.dataclass
-class Fragment:
-    offset: int
-    size: int
-    data: bytes | bytearray | memoryview | None = None
-
-    def set_data(self, data: bytes | bytearray | memoryview):
-        if self.size != len(data):
-            raise ValueError('Size mismatch.')
-        self.data = data
-
-
-class Builder:
-    _fragments: list[Fragment]
-    _last_offset: int
-
-    def __init__(self):
-        self._fragments = []
-        self._last_offset = 0
-
-    def append(self, size: int) -> Fragment:
-        result = Fragment(self._last_offset, size, None)
-        self._fragments.append(result)
-        self._last_offset += size
-        return result
-
-    def concat(self) -> bytes:
-        result = io.BytesIO()
-        for fragment in self._fragments:
-            result.write(fragment.data)
-        return result.getvalue()
-
-    def sizeof(self):
-        return self._last_offset
-
-
 def build_embeddable_from_spec_file(spec_dict_in: dict):
     str_table: dict[str, Fragment] = {}
 
     def add_to_strtab(str_: str) -> Fragment:
         nonlocal str_table
         if str_ not in str_table:
-            encoded = str_.encode('utf-16')
+            encoded = str_.encode('utf-16le')
             str_table_entry = builder.append(len(encoded) + 2)
             str_table_entry.set_data(encoded + b'\x00\x00')
             str_table[str_] = str_table_entry
@@ -99,7 +62,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
 
     build_date = RomSpecTimestamp.now()
 
-    builder = Builder()
+    builder = BinaryBuilder()
 
     # Forward declaration
     header_alloc = builder.append(CsRomSpecType.sizeof())
