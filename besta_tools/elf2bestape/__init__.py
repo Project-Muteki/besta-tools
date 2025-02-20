@@ -30,7 +30,7 @@ from elftools.elf.relocation import RelocationSection
 
 from besta_tools.common.utils import BinaryBuilder
 
-ELF2BESTAPE_VERSION = (0, 2, 0)
+ELF2BESTAPE_VERSION = (1, 0, 0)
 
 
 logger = logging.getLogger('elf2bestape')
@@ -205,8 +205,8 @@ class BestaPESection(enum.IntEnum):
     TOTAL = 4
 
 
-def align(pos: int, blksize: int) -> int:
-    return (pos // blksize * blksize) + (blksize if pos % blksize != 0 else 0)
+def align(pos: int, blksize: int, greedy: bool = False) -> int:
+    return (pos // blksize * blksize) + (blksize if greedy or pos % blksize != 0 else 0)
 
 def lalign(pos: int, blksize: int) -> int:
     return pos // blksize * blksize
@@ -224,8 +224,8 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p.add_argument('--force-flattern-rel', action='store_true', default=False, help='Force the conversion of all general relative relocations to absolute. For testing only and normally should not be used.')
     return p, p.parse_args()
 
-def generate_padding(length: int, blksize: int) -> bytes:
-    return b'\x00' * (align(length, blksize) - length)
+def generate_padding(length: int, blksize: int, greedy: bool = False) -> bytes:
+    return b'\x00' * (align(length, blksize, greedy=greedy) - length)
 
 def get_executable_segment(elf):
     for idx, seg in enumerate(elf.iter_segments()):
@@ -245,10 +245,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
     bss_size = 0
     rsrc_base = 0
     reloc_base = 0
-    text_data: Optional[Union[Tuple[bytes, int], bytes]] = None
-    rdata_data: Optional[Union[Tuple[bytes, int], bytes]] = None
-    data_data: Optional[Union[Tuple[bytes, int], bytes]] = None
-    rsrc_data: Optional[Union[Tuple[bytes, int], bytes]] = None
+    text_data: Optional[Tuple[bytes, int, bool]] = None
+    rdata_data: Optional[Tuple[bytes, int, bool]] = None
+    data_data: Optional[Tuple[bytes, int, bool]] = None
+    rsrc_data: Optional[Tuple[bytes, int, bool]] = None
     executable_seg = get_executable_segment(elf)
     elf_base = elf.get_segment(executable_seg)['p_vaddr']
     image_base = elf_base - BESTAPE_MAX_HEADER_SIZE
@@ -275,7 +275,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                 )
                 text_base = seg['p_vaddr'] - image_base
                 text_size = align(seg['p_filesz'], 0x200)
-                text_data = (seg.data(), lpad)
+                text_data = (seg.data(), lpad, False)
             elif seg['p_flags'] == elfconsts.P_FLAGS.PF_R:
                 logger.info('Found segment that maps to .rdata at segment #%d', idx)
                 if rdata_data is not None:
@@ -287,7 +287,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                 )
                 data_base = seg['p_vaddr'] - image_base
                 data_size += align(seg['p_filesz'], 0x200)
-                rdata_data = (seg.data(), lpad)
+                rdata_data = (seg.data(), lpad, False)
             elif seg['p_flags'] == elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_W:
                 logger.info('Found segment that maps to .data at segment #%d', idx)
                 if data_data is not None:
@@ -302,7 +302,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                 bss_size = seg['p_memsz'] - seg['p_filesz']
                 if bss_size != 0:
                     sec_header_dict['Characteristics'] |= pefile.SECTION_CHARACTERISTICS['IMAGE_SCN_CNT_UNINITIALIZED_DATA']
-                data_data = (seg.data(), lpad)
+                data_data = (seg.data(), lpad, False)
                 # PE relocation table begins after the end of all ELF segments.
                 rsrc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
@@ -430,7 +430,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
 
         rsrc_romspc_data_fragment.set_data(romspec)
 
-        rsrc_data = (rsrc_emitter.concat(), 0)
+        rsrc_data = (rsrc_emitter.concat(), 0, False)
 
     if rsrc_data is not None:
         # Calculate rsrc allocation size
@@ -562,8 +562,8 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
     for reloc_struct in generated_relocs:
         relocs_data_io.write(reloc_struct.__pack__())
 
-    reloc_data = (relocs_data_io.getvalue(), 0)
-    reloc_size = align(reloc_pos, 0x200)
+    reloc_data = (relocs_data_io.getvalue(), 0, True)
+    reloc_size = align(reloc_pos, 0x200, greedy=True)
     reloc_memsize = reloc_pos
 
     reloc_section_header = EMPTY_SECTION_HEADER.copy()
@@ -668,11 +668,12 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
 
     for data in (text_data, rdata_data, data_data, rsrc_data, reloc_data):
         if data is not None:
+            greedy = data[2]
             lpad = data[1]
             if lpad != 0:
                 pe_file.write(b'\x00' * lpad)
             pe_file.write(data[0])
-            pe_file.write(generate_padding(pe_file.tell(), 0x200))
+            pe_file.write(generate_padding(pe_file.tell(), 0x200, greedy=greedy))
     actual_image_size = len(pe_file.getvalue())
     assert actual_image_size == image_size, f'Inconsistent generated image size vs calculated (expecting {image_size:#x}, got {actual_image_size:#x}).'
 
