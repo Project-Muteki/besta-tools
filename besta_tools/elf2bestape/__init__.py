@@ -221,7 +221,6 @@ def parse_args() -> Tuple[argparse.ArgumentParser, argparse.Namespace]:
     p.add_argument('-o', '--output', help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
     p.add_argument('-r', '--romspec-file', help='Include binary ROM spec file to make Type 2 ROM file.')
     p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
-    p.add_argument('--force-flattern-rel', action='store_true', default=False, help='Force the conversion of all general relative relocations to absolute. For testing only and normally should not be used.')
     return p, p.parse_args()
 
 def generate_padding(length: int, blksize: int, greedy: bool = False) -> bytes:
@@ -315,7 +314,10 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
         sec_header_dict['VirtualAddress'] = lalign(seg['p_vaddr'] - image_base, 0x1000)
         sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'] + lpad, 0x200)
         if lpad != 0:
-            logger.warning(f'ELF segment {idx} not aligned with page boundary. Manually padding it. This will slightly increase the executable size.')
+            logger.warning(
+                'ELF segment %d not aligned with page boundary. '
+                'Manually padding it. This will slightly increase the executable size. '
+                'Please consider rebuilding the file with the appropriate page size.', idx)
         # To be fixed in pass 2
         # sec_header_dict['PointerToRawData']
         section_dicts.append(sec_header_dict)
@@ -472,7 +474,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
             rel_target_data = rel_target_sec.data()
 
             if rel_section.name in ('.rel.ARM.exidx', '.rel.ARM.extab', '.rel.eh_frame'):
-                # exidx and extab are relocated by libgcc's unwind routine. Do nothing here.
+                # exidx and extab are handled by libgcc's unwind routine. Do nothing here.
                 logger.info('Skipping exception related section.')
                 continue
 
@@ -491,6 +493,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                 if type_ in AAELF_RELOC_ABSOLUTE:
                     logger.debug('Abs reloc type=%s, value=%#010x, sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_word, sym_offset, rel_offset, rel_word_offset)
                     if sym['st_info']['bind'] == 'STB_WEAK' and sym_offset == 0:
+                        logger.debug('Skipping weak symbols.')
                         continue
 
                     assert rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
@@ -498,40 +501,9 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                     rel_offset_lo = rel_offset & 0x00000fff
                     reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
 
-                elif type_ == R_ARM_PREL31 and args.force_flattern_rel:
-                    logger.warning('Flatterning non-exception PREL31. This is probably unnecessary and harmful.')
-                    is_exidx_compact = bool(rel_target_word & 0x80000000)
-                    if is_exidx_compact:
-                        continue
-
-                    rel_target_word &= 0x7fffffff
-                    # sign extend
-                    prel31_off_signext = ((rel_target_word | 0x80000000) if (rel_target_word & 0x40000000) else rel_target_word)
-                    prel31_off = int.from_bytes(prel31_off_signext.to_bytes(4, 'little'), 'little', signed=True)
-                    new_rel_target_word = rel_offset + prel31_off
-
-                    logger.debug('PREL31 reloc type=%s, value=%#x (abs=%#010x), sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], prel31_off, new_rel_target_word, sym_offset, rel_offset, rel_word_offset)
-                    assert new_rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
-                    patches[rel_offset] = new_rel_target_word.to_bytes(4, 'little')
-
-                    rel_offset_hi = rel_offset & 0xfffff000
-                    rel_offset_lo = rel_offset & 0x00000fff
-                    reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
                 elif type_ == R_ARM_PREL31:
                     logger.info('Ignoring non-exception PREL31 (%#010x @ %#010x).', rel_target_word, rel_offset)
 
-                elif type_ in AAELF_RELOC_RELATIVE and args.force_flattern_rel:
-                    logger.warning('Flatterning relative reloc. This is probably unnecessary and harmful.')
-                    rel_target_off = int.from_bytes(rel_target_word.to_bytes(4, 'little'), 'little', signed=True)
-                    new_rel_target_word = rel_offset + rel_target_off
-
-                    logger.debug('Rel reloc type=%s, value=%#x (abs=%#010x), sym_value=%#010x, @ %#010x (%#010x in section)', ENUM_RELOC_NAME_ARM[type_], rel_target_off, new_rel_target_word, sym_offset, rel_offset, rel_word_offset)
-                    assert new_rel_target_word >= elf_base, 'REL symbol is not a valid address within the program.'
-                    patches[rel_offset] = new_rel_target_word.to_bytes(4, 'little')
-
-                    rel_offset_hi = rel_offset & 0xfffff000
-                    rel_offset_lo = rel_offset & 0x00000fff
-                    reloc_dicts[rel_offset_hi][rel_offset_lo] = pefile.RELOCATION_TYPE['IMAGE_REL_BASED_HIGHLOW']
                 elif type_ in AAELF_RELOC_RELATIVE:
                     logger.info('Ignoring relative reloc (%#010x @ %#010x).', rel_target_word, rel_offset)
 
