@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 from typing import (
     Any,
     Tuple,
@@ -29,6 +30,11 @@ from elftools.elf import enums as elfenums
 from elftools.elf.relocation import RelocationSection
 
 from besta_tools.common.utils import BinaryBuilder
+
+PEFILE_WARNING_TOO_MANY_0 = re.compile(
+    r"Byte 0x00 makes up [0-9]{2}\.?[0-9]+% of the file's contents. "
+    r"This may indicate truncation / malformation."
+)
 
 ELF2BESTAPE_VERSION = (1, 0, 0)
 
@@ -257,6 +263,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
     # Generate section headers
     section_dicts = []
     segment_lpaddings = {}
+    segment_load_file_size = 0
     for idx, seg in enumerate(elf.iter_segments()):
         sec_header_dict = EMPTY_SECTION_HEADER.copy()
         # Workaround data alignment issue in stock GCC ldscript.
@@ -306,6 +313,7 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
                 rsrc_base = align(seg['p_vaddr'] + seg['p_memsz'] - image_base, 0x1000)
             else:
                 raise RuntimeError(f'Unknown PT_LOAD segment {idx} with flag {seg["p_flags"]:#010x}')
+            segment_load_file_size += seg['p_filesz']
         elif seg['p_type'] in ('PT_ARM_EXIDX', 'PT_TLS'):
             continue
         else:
@@ -663,6 +671,9 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: Optional[bytes], a
 
     logger.debug('pefile objdump:\n%s', pefile_obj.dump_info())
     for pefile_warning in pefile_obj.get_warnings():
+        if segment_load_file_size < 0x8000 and PEFILE_WARNING_TOO_MANY_0.match(pefile_warning) is not None:
+            logger.debug('suppressed pefile warning: %s', pefile_warning)
+            continue
         logger.info('pefile warning: %s', pefile_warning)
     pe_file.write(pefile_obj.write())
 
