@@ -2,12 +2,12 @@ import dataclasses
 import datetime
 
 from construct import Byte, Const, Default, Int16ul, Int32ul, this
-from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, csfield
+from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, FlagsEnumBase, TFlagsEnum, csfield
 
 from ..common.formats import CsChecksumValue, ChecksumValue
 
 
-class RomType(EnumBase):
+class RomType(FlagsEnumBase):
     DATA_BOOK = 0x8
     DATA_DICT = 0x9
     APPLET_GAME = 0xb
@@ -15,10 +15,10 @@ class RomType(EnumBase):
     APPLET_STUDY = 0x16
 
 
-# CsRomType = TEnum(Int16ul, RomType)
+CsRomType = TFlagsEnum(Int16ul, RomType)
 
 
-class RomLocale(EnumBase):
+class RomLocale(FlagsEnumBase):
     NONE = 0x0
     ZH_CN = 0x1
     ZH_TW = 0x2
@@ -30,7 +30,7 @@ class RomLocale(EnumBase):
     UNSET = 0xffff
 
 
-# CsRomLocale = TEnum(Int16ul, RomLocale)
+CsRomLocale = TFlagsEnum(Int16ul, RomLocale)
 
 
 class MagicType(EnumBase):
@@ -74,10 +74,10 @@ CsRomSpecTimestamp = DataclassStruct(RomSpecTimestamp)
 class RomSpecType(DataclassMixin):
     magic: int = csfield(CsMagicType)
     spec_size: int = csfield(Const(0x80, Int16ul))
-    type_: RomType | int = csfield(Int16ul)  # TODO RomType does not work as flags.
+    type_: RomType | int = csfield(Int16ul)  # Intentionally set this to be not an enum so we can pass an int as type
     checksum: ChecksumValue = csfield(CsChecksumValue)
     unk_0xa: int = csfield(Default(Int16ul, 0xffff))
-    default_locale: RomLocale | int = csfield(Int16ul)  # TODO RomLocale does not work as flags.
+    default_locale: RomLocale | int = csfield(CsRomLocale)
     sections_offset: int = csfield(Int16ul)
     build_timestamp: RomSpecTimestamp = csfield(CsRomSpecTimestamp)
     rom_size: int = csfield(Int32ul)
@@ -108,7 +108,7 @@ CsRomSpecType = DataclassStruct(RomSpecType)
 @dataclasses.dataclass
 class RomFallbackTitle(DataclassMixin):
     unk_0x0: int = csfield(Default(Int16ul, 0xffff))
-    locale: RomLocale | int = csfield(Int16ul)
+    locale: RomLocale | int = csfield(CsRomLocale)
     title_offset: int = csfield(Int32ul)
     chinese_title_offset: int = csfield(Int32ul)
     short_title_offset: int = csfield(Int32ul)

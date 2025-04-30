@@ -1,17 +1,20 @@
 from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from construct import Context
+    from construct import Context, Const, Construct
 
 import dataclasses
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 from construct import (
     Bytes,
     Default,
+    Int8ul,
     Int32ul,
     this
 )
-from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, csfield
+from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFlagsEnum, csfield
+
+from .usbms_const import *
 
 
 class BestaDfuSbcOpcode(IntEnum):
@@ -19,7 +22,7 @@ class BestaDfuSbcOpcode(IntEnum):
     GET_CONFIG = 0x89
 
 
-class BestaDfuCommand(EnumBase):
+class BestaDfuCommand(FlagsEnumBase):
     CMD_PING_ARG = 0xbead
     CMD_ERASE_AND_SCAN = 0xbec2
     CMD_PROBE_REGION = 0xbec5
@@ -30,7 +33,17 @@ class BestaDfuCommand(EnumBase):
     ACK = 0x80000000
 
 
-CsBestaDfuCommand = TEnum(Int32ul, BestaDfuCommand)
+CsBestaDfuCommand = TFlagsEnum(Int32ul, BestaDfuCommand)
+
+
+@dataclasses.dataclass
+class CBW(DataclassMixin):
+    dCBWSignature: int = csfield(Const(USBMS_CBW_MAGIC, Int32ul))
+    dCBWTag: int = csfield(Int32ul)
+    dCBWDataTransferLength: int = csfield(Int32ul)
+    bmCBWFlags: int = csfield(Int8ul)
+    bCBWLUN: int = csfield(Int8ul)
+    bCBWCBLength: int = csfield(Int8ul)
 
 
 @dataclasses.dataclass

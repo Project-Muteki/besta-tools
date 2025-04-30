@@ -162,7 +162,11 @@ class ImageFileV2:
         return cls(image_path, metadata=metadata, index=index)
 
     def build(self, output: str | Path) -> None:
-        ...
+        block0_init = bytearray(self.manifest.block_size)
+        metadata = CsImageMetadataV2.build(self.metadata)
+        block0_init[:len(metadata)] = metadata
+        index = CsImageIndexV2.build(self.index)
+        # TODO
 
     def extract(self, output: str | Path) -> None:
         output = Path(output)

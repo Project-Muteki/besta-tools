@@ -140,7 +140,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
             else int(spec_dict_rom['category'])
         ),
         checksum=checksum_value,
-        default_locale=RomLocale.FORCE_UTF16.value | LOCALE_MAPPING[spec_dict_rom['default-locale']].value,
+        default_locale=RomLocale.FORCE_UTF16 | LOCALE_MAPPING[spec_dict_rom['default-locale']],
         sections_offset=0,
         build_timestamp=build_date,
         rom_size=builder.sizeof(),

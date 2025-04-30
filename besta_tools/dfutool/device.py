@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import usb.core
+import libusb_package
 
 
 @dataclass
@@ -50,8 +51,8 @@ KNOWN_DEVICE_TYPES: Sequence[DfuType] = (
         product='W55PA71      ',
     ),
     DfuType(
-        name='fa32',
-        description='Nuvoton FA32 family bootloader',
+        name='n32926',
+        description='Nuvoton N32926 family bootloader',
         vid=0x0483,
         pid=0x5720,
         manufacturer='nuvoTon',
@@ -82,7 +83,7 @@ def trim_nul_terminated(value: str | None) -> str | None:
 
 
 def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device]]:
-    for dev in usb.core.find(find_all=True):
+    for dev in usb.core.find(find_all=True, backend=libusb_package.get_libusb1_backend()):
         try:
             device_type_key = (
                 cast(int | None, dev.idVendor),
