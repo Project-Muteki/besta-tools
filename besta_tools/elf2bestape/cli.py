@@ -12,17 +12,18 @@ from .formats import ImageBuildContext
 from .steps.serialize import serialize
 from .utils import get_executable_segment
 
-from .steps.initialize import initialize_directory_dicts
+from .steps.initialize import initialize_directory_dicts, detect_type
 from .steps.scan_segments import scan_segments
 from .steps.generate_sections import generate_rsrc, generate_reloc
 from .steps.complete_headers import complete_headers
 
 
-logger = logging.getLogger('elf2bestape.cli2')
+logger = logging.getLogger('elf2bestape.cli')
 
 
 STEPS: list[Callable[[ImageBuildContext], None]] = [
     initialize_directory_dicts,
+    detect_type,
     scan_segments,
     generate_rsrc,
     generate_reloc,
@@ -61,7 +62,8 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: bytes | None, args
         'image_base': image_base,
         'patches': {},
         'output': pe_file,
-        romspec: romspec,
+        'romspec': romspec,
+        'is_dll': False,
     }
 
     for step in STEPS:

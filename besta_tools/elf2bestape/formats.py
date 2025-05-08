@@ -20,6 +20,7 @@ class ImageBuildContext(TypedDict):
     patches: dict[int, bytes]
     romspec: bytes | None
     output: 'io.BytesIO'
+    is_dll: bool
     next_section_base: NotRequired[int]
     expected_image_size: NotRequired[int]
 

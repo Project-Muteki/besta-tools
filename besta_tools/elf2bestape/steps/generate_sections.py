@@ -36,7 +36,7 @@ def generate_rsrc(context: ImageBuildContext):
     section_dicts = context['section_dicts']
     rsrc_directory = context['directory_dicts'][pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_RESOURCE']]
 
-    if 'romspec' in context:
+    if context['romspec'] is not None:
         romspec = context['romspec']
 
         # Generate rsrc data

@@ -30,10 +30,10 @@ def complete_headers(context: ImageBuildContext):
     file_header_dict['Characteristics'] = (
         pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_EXECUTABLE_IMAGE'] |
             pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_32BIT_MACHINE'] |
-            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_LINE_NUMS_STRIPPED'] |
-            pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_LOCAL_SYMS_STRIPPED'] |
             pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_DEBUG_STRIPPED']
     )
+    if context['is_dll']:
+        file_header_dict['Characteristics'] |= pefile.IMAGE_CHARACTERISTICS['IMAGE_FILE_DLL']
     file_header_dict['NumberOfSections'] = len(section_dicts)
 
     optional_header_size = (
