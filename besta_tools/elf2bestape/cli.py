@@ -43,9 +43,12 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     p = argparse.ArgumentParser(description='Generate Besta PE file from an AAELF file.')
     p.add_argument('elf', help='Input AAELF file.')
     p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
-    p.add_argument('-o', '--output', help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
+    p.add_argument('-o', '--output',
+                   help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
     p.add_argument('-r', '--romspec-file', help='Include binary ROM spec file to make Type 2 ROM file.')
-    p.add_argument('--deterministic', action='store_true', default=False, help='Enable deterministic conversion. (i.e. omitting fields that may affect the hash of the binary such as build timestamp)')
+    p.add_argument('--deterministic', action='store_false', default=True,
+                   help='Enable deterministic conversion. (i.e. populate the timestamp field with a hash value '
+                        'measured from selected PE headers and all sections instead of the actual build timestamp)')
     return p, p.parse_args()
 
 

@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from typing import Sequence, Literal
 
 import pefile
@@ -12,9 +13,12 @@ logger = logging.getLogger('elf2bestape.steps.serialize')
 SECTION_LEAVES: Sequence[Literal['text_data', 'rdata_data', 'data_data', 'rsrc_data', 'reloc_data']] = ('text_data', 'rdata_data', 'data_data', 'rsrc_data', 'reloc_data')
 
 def serialize(context: ImageBuildContext):
+    build_id_measurer = hashlib.sha256()
+
     pos = 0x0
 
     pe_file = context['output']
+    args = context['args']
 
     assert 'text_data' in context
     assert 'rdata_data' in context
@@ -41,6 +45,7 @@ def serialize(context: ImageBuildContext):
         file_offset=pos
     )
     pos += file_header.sizeof()
+    build_id_measurer.update(file_header.__pack__())
 
     optional_header = pefile_struct_from_dict(
         pefile.PE.__IMAGE_OPTIONAL_HEADER_format__,
@@ -48,12 +53,14 @@ def serialize(context: ImageBuildContext):
         file_offset=pos
     )
     pos += optional_header.sizeof()
+    build_id_measurer.update(optional_header.__pack__())
 
     directories: list[pefile.Structure] = []
     for directory_dict in context['directory_dicts']:
         dir_ = pefile_struct_from_dict(pefile.PE.__IMAGE_DATA_DIRECTORY_format__, directory_dict, file_offset=pos)
         pos += dir_.sizeof()
         directories.append(dir_)
+        build_id_measurer.update(dir_.__pack__())
 
     sections: list[pefile.Structure] = []
     for sec in context['section_dicts']:
@@ -94,6 +101,7 @@ def serialize(context: ImageBuildContext):
             context['reloc_data']
     ):
         if data is not None:
+            build_id_measurer.update(data.data)
             if data.lpad != 0:
                 pe_file.write(b'\x00' * data.lpad)
             pe_file.write(data[0])
@@ -106,6 +114,10 @@ def serialize(context: ImageBuildContext):
     # using pefile for some fixing and linting
     pefile_obj = pefile.PE(data=pe_file.getvalue())
     pefile_obj.OPTIONAL_HEADER.CheckSum = pefile_obj.generate_checksum()
+    if args.deterministic:
+        build_id_long = build_id_measurer.digest()
+        logger.debug('Measured build ID: %s', build_id_long.hex())
+        pefile_obj.FILE_HEADER.TimeDateStamp = int.from_bytes(build_id_long[-4:], 'big')
 
     for offset, val in context['patches'].items():
         rva = offset - context['image_base']

@@ -11,7 +11,7 @@ PEFILE_WARNING_TOO_MANY_0 = re.compile(
     r"This may indicate truncation / malformation."
 )
 
-ELF2BESTAPE_VERSION = (1, 0, 0)
+ELF2BESTAPE_VERSION = (2, 0, 0)
 
 ENUM_RELOC_NAME_ARM = {v: k for k, v in elfenums.ENUM_RELOC_TYPE_ARM.items()}
 
