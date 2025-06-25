@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "besta-tools"
-version = "0.1.0"
+version = "1.0.0"
 description = "Tools for working with Besta data formats"
 authors = ["dogtopus <dogtopus@users.noreply.github.com>"]
 license = "MIT"
