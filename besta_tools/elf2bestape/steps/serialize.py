@@ -21,7 +21,7 @@ def serialize(context: ImageBuildContext):
     args = context['args']
 
     assert 'text_data' in context
-    assert 'rdata_data' in context
+    #assert 'rdata_data' in context
     assert 'data_data' in context
     assert 'reloc_data' in context
 
@@ -94,11 +94,11 @@ def serialize(context: ImageBuildContext):
     pe_file.write(generate_padding(pe_file.tell(), 0x200))
 
     for data in (
-            context['text_data'],
-            context['rdata_data'],
-            context['data_data'],
+            context.get('text_data'),
+            context.get('rdata_data'),
+            context.get('data_data'),
             context.get('rsrc_data'),
-            context['reloc_data']
+            context.get('reloc_data')
     ):
         if data is not None:
             build_id_measurer.update(data.data)

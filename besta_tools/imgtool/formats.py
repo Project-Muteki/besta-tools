@@ -200,3 +200,15 @@ class ImageFileV2:
                 checksum_actual = simple_checksum(f, self.metadata.checksum_block_size)
                 results.append(checksum_actual == checksum.checksum)
         return results
+
+    def checksum(self) -> list[int]:
+        results: list[int] = []
+        with self.path.open('rb') as f:
+            for offset, checksum in zip(
+                    range(0, self.metadata.data_size, self.metadata.checksum_block_size),
+                    self.metadata.checksums
+            ):
+                f.seek(offset)
+                checksum = simple_checksum(f, self.metadata.checksum_block_size)
+                results.append(checksum)
+        return results
