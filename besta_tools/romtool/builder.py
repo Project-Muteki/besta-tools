@@ -80,7 +80,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
 
     localized_title = RomLocalizedTitle(
         num_entries=len(spec_dict_metadata),
-        locale=RomLocale.UNSET.value,
+        locale=RomLocale.UNSET,
     )
     localized_title_alloc.set_data(CsRomLocalizedTitle.build(localized_title))
 
@@ -113,7 +113,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
         fallback_short_title_alt_fragment = None
 
     fallback_title_index = RomFallbackTitle(
-        locale=RomLocale.UNSET.value,
+        locale=RomLocale.UNSET,
         title_offset=fallback_title_fragment.offset,
         short_title_offset=(
             fallback_short_title_fragment.offset if fallback_short_title_fragment is not None else 0xffffffff

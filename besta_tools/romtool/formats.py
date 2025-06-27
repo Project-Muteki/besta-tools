@@ -77,7 +77,7 @@ class RomSpecType(DataclassMixin):
     type_: RomType | int = csfield(Int16ul)  # Intentionally set this to be not an enum so we can pass an int as type
     checksum: ChecksumValue = csfield(CsChecksumValue)
     unk_0xa: int = csfield(Default(Int16ul, 0xffff))
-    default_locale: RomLocale | int = csfield(CsRomLocale)
+    default_locale: RomLocale = csfield(CsRomLocale)
     sections_offset: int = csfield(Int16ul)
     build_timestamp: RomSpecTimestamp = csfield(CsRomSpecTimestamp)
     rom_size: int = csfield(Int32ul)
@@ -108,7 +108,7 @@ CsRomSpecType = DataclassStruct(RomSpecType)
 @dataclasses.dataclass
 class RomFallbackTitle(DataclassMixin):
     unk_0x0: int = csfield(Default(Int16ul, 0xffff))
-    locale: RomLocale | int = csfield(CsRomLocale)
+    locale: RomLocale = csfield(CsRomLocale)
     title_offset: int = csfield(Int32ul)
     chinese_title_offset: int = csfield(Int32ul)
     short_title_offset: int = csfield(Int32ul)
@@ -131,7 +131,7 @@ CsRomExtMetadataHeader = DataclassStruct(RomExtMetadataHeader)
 @dataclasses.dataclass
 class RomLocalizedTitle(DataclassMixin):
     num_entries: int = csfield(Int32ul)
-    locale: RomLocale | int = csfield(Int16ul)
+    locale: RomLocale = csfield(CsRomLocale)
     unk_0x6: int = csfield(Default(Int16ul, 0x0))
     unk_0x8: int = csfield(Default(Int32ul, 0xffffffff))
     unk_0xc: int = csfield(Default(Int32ul, 0xffffffff))
@@ -142,7 +142,7 @@ CsRomLocalizedTitle = DataclassStruct(RomLocalizedTitle)
 
 @dataclasses.dataclass
 class RomLocalizedTitleEntry(DataclassMixin):
-    locale: int | RomLocale = csfield(Int16ul)
+    locale: RomLocale = csfield(CsRomLocale)
     unk_0x2: int = csfield(Default(Int16ul, 0x0))
     unk_0x4: int = csfield(Default(Int32ul, 0xffffffff))
     title_offset: int = csfield(Int32ul)
