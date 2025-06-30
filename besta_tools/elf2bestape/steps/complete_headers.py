@@ -52,7 +52,7 @@ def complete_headers(context: ImageBuildContext):
 
     all_header_size = section_offset = align(header_size + optional_header_size + section_header_size, 0x200)
     optional_header_dict['SizeOfHeaders'] = all_header_size
-    optional_header_dict['SizeOfImage'] = last_section_ends_at_vaddr
+    optional_header_dict['SizeOfImage'] = align(last_section_ends_at_vaddr, 0x1000)
 
     for section_dict in section_dicts:
         section_dict['PointerToRawData'] = section_offset
