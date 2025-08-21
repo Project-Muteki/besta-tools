@@ -2,9 +2,13 @@ from typing import BinaryIO, Self, cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from construct import Context
 
+import math
+import shutil
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#import filetype
 import yaml
 
 from construct import (
@@ -26,7 +30,8 @@ from marshmallow_dataclass import dataclass as mm_dataclass
 from marshmallow_dataclass import class_schema as mm_class_schema
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import simple_checksum
+from ..common.utils import simple_checksum, copyfileobjex
+from ..elf2bestape.utils import generate_padding
 
 
 IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
@@ -56,10 +61,9 @@ class ImageMetadataV2(DataclassMixin):
     data_size: int = csfield(Int64ul)
     checksum_block_size: int = csfield(Int32ul)
     unk_0x44: int = csfield(Int32ul)
-    _padding_0x48: int = csfield(Padding(24))
-    has_checksum: bool = csfield(Computed(this.checksum_block_size != 0))
+    _padding_0x48: None = csfield(Padding(24))
     checksums: list[ChecksumValue] = csfield(IfThenElse(
-        this.has_checksum,
+        this.checksum_block_size != 0,
         Array(this.data_size // this.checksum_block_size, CsChecksumValue),
         Array(0, CsChecksumValue),
     ))
@@ -123,6 +127,7 @@ MmImageManifest = mm_class_schema(ImageManifest)
 @dataclass
 class ImageFileV2:
     path: Path
+    is_file: bool
     metadata: ImageMetadataV2 | None = field(default=None)
     index: ImageIndexV2 | None = field(default=None)
     manifest: ImageManifest | None = field(default=None)
@@ -135,8 +140,12 @@ class ImageFileV2:
         with self.path.open('rb') as f:
             guessed_block_size = guess_block_size_image_v2(f)
 
+        align = math.gcd(*(e.offset for e in filter((lambda ee: ee.offset != 0), self.index.entries)))
+        if align == 0:
+            align = 1
+
         sections: list[ImageManifestSection] = [
-            ImageManifestSection(f'sections/{i:08x}.bin') for i in range(self.index.nentries)
+            ImageManifestSection(f'sections/{i:08x}.bin', align=align) for i in range(self.index.nentries)
         ]
 
         self.manifest = ImageManifest(
@@ -159,16 +168,43 @@ class ImageFileV2:
             f.seek(block1_offset)
             index = CsImageIndexV2.parse_stream(f)
 
-        return cls(image_path, metadata=metadata, index=index)
+        return cls(image_path, is_file=True, metadata=metadata, index=index)
 
     def build(self, output: str | Path) -> None:
-        block0_init = bytearray(self.manifest.block_size)
+        if self.metadata is None or self.manifest is None or self.index is None:
+            raise ValueError('Incomplete image file object. Building not supported.')
+        
+        output = Path(output)
+
         metadata = CsImageMetadataV2.build(self.metadata)
-        block0_init[:len(metadata)] = metadata
         index = CsImageIndexV2.build(self.index)
-        # TODO
+
+        with output.open('wb') as fout:
+            fout.write(metadata)
+            fout.write(generate_padding(fout.tell(), self.manifest.block_size))
+            fout.write(index)
+            fout.write(generate_padding(fout.tell(), self.manifest.block_size, pad_byte=0xff))
+
+            if not self.is_file:
+                for section, entry in zip(self.manifest.sections, self.index.entries):
+                    with open(section.path, 'rb') as fsec:
+                        assert entry.offset == fout.tell(), ('Attempting to place section at unexpected offset. '
+                                                             'This is likely a bug of the index builder.')
+                        shutil.copyfileobj(fsec, fout)
+                        fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+            else:
+                with self.path.open('rb') as image_file:
+                    for section, entry in zip(self.manifest.sections, self.index.entries):
+                        image_file.seek(entry.offset)
+                        copyfileobjex(image_file, fout, limit=entry.size)
+                        fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+            fout.write(generate_padding(fout.tell(), self.metadata.content_size, pad_byte=0xff))
 
     def extract(self, output: str | Path) -> None:
+        if self.manifest is None or self.index is None:
+            raise ValueError('Incomplete image file object. Extraction not supported.')
         output = Path(output)
         output.mkdir(exist_ok=True)
         with (output / 'manifest.yaml').open('w') as manifest_file:
@@ -180,16 +216,16 @@ class ImageFileV2:
                 with section_file_path.open('wb') as section_file:
                     image_file.seek(entry.offset)
                     bytes_left: int = entry.size
-                    while bytes_left > 0:
-                        bytes_to_read = min(4096, bytes_left)
-                        section_file.write(image_file.read(bytes_to_read))
-                        bytes_left -= bytes_to_read
+                    copyfileobjex(image_file, section_file, limit=entry.size)
 
     @classmethod
     def from_manifest(cls, manifest_path: str | Path) -> Self:
+        # TODO create index and metadata out of a loaded manifest file
         ...
 
     def verify(self) -> list[bool]:
+        if self.metadata is None:
+            raise ValueError('Missing metadata. Cannot verify. Has the file been correctly parsed?')
         results: list[bool] = []
         with self.path.open('rb') as f:
             for offset, checksum in zip(
@@ -202,9 +238,11 @@ class ImageFileV2:
         return results
 
     def checksum(self) -> list[int]:
+        if self.metadata is None:
+            raise ValueError('Missing metadata. Cannot verify. Has the file been correctly parsed?')
         results: list[int] = []
         with self.path.open('rb') as f:
-            for offset, checksum in zip(
+            for offset, _checksum in zip(
                     range(0, self.metadata.data_size, self.metadata.checksum_block_size),
                     self.metadata.checksums
             ):

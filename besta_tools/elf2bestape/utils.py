@@ -28,8 +28,13 @@ def lalign(pos: int, blksize: int) -> int:
 def lpadding(pos: int, blksize: int) -> int:
     return pos - (pos // blksize * blksize)
 
-def generate_padding(length: int, blksize: int, greedy: bool = False) -> bytes:
-    return b'\x00' * (align(length, blksize, greedy=greedy) - length)
+def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: int | None = None) -> bytes:
+    pad_byte_b = bytearray(1)
+    if pad_byte is not None:
+        pad_byte_b[0] = pad_byte
+    else:
+        pad_byte_b[0] = 0
+    return bytes(pad_byte_b) * (align(length, blksize, greedy=greedy) - length)
 
 def get_executable_segment(elf):
     for idx, seg in enumerate(elf.iter_segments()):

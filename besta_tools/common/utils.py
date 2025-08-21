@@ -1,6 +1,14 @@
-from typing import BinaryIO
+from typing import BinaryIO, AnyStr, TYPE_CHECKING
 from dataclasses import dataclass
 import io
+import shutil
+import os
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsRead, SupportsWrite
+
+
+COPY_BUFSIZE = 1024 * 1024 if os.name == 'nt' else 64 * 1024
 
 
 @dataclass
@@ -67,3 +75,18 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
             bytes_left -= actual
 
     return checksum & 0xffff
+
+def copyfileobjex(
+    fsrc: 'SupportsRead[AnyStr]',
+    fdst: 'SupportsWrite[AnyStr]',
+    length: int = COPY_BUFSIZE,
+    limit: int | None = None
+) -> None:
+    if limit is None:
+        shutil.copyfileobj(fsrc, fdst, length)
+        return
+
+    while limit > 0:
+        bytes_to_read = min(length, limit)
+        fdst.write(fsrc.read(bytes_to_read))
+        limit -= bytes_to_read
