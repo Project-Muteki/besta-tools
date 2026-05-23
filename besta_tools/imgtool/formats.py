@@ -30,11 +30,12 @@ from marshmallow_dataclass import dataclass as mm_dataclass
 from marshmallow_dataclass import class_schema as mm_class_schema
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import simple_checksum, copyfileobjex
+from ..common.utils import simple_checksum, copyfileobjex, is_strictly_nul_terminated
 from ..elf2bestape.utils import generate_padding
 
 
 IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
+IMAGE_INDEX_V1_MAGIC = b'\x1d\x80\x01\x00'
 
 
 def guess_block_size_image_v2(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> int:
@@ -44,6 +45,45 @@ def guess_block_size_image_v2(f: BinaryIO, search_limit: int = 0x100000, step_si
             return offset
     raise RuntimeError('Cannot determine block size.')
 
+
+@dataclass
+class ProbeResult:
+    header_format_version: int
+    index_type: int
+    block_size: int
+
+
+def probe_image(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> ProbeResult:
+    header_format_version = None
+    block_size = None
+    index_type = None
+
+    f.seek(16)
+    seq1 = f.read(16)
+    seq2 = f.read(16)
+    if is_strictly_nul_terminated(seq1) and is_strictly_nul_terminated(seq2):
+        header_format_version = 2
+    elif is_strictly_nul_terminated(seq1[:14]) and not is_strictly_nul_terminated(seq2):
+        header_format_version = 1
+    for offset in range(0, search_limit, step_size):
+        f.seek(offset)
+        marker = f.read(step_size)[:4]
+        if marker == IMAGE_INDEX_V2_MAGIC:
+            index_type = 2
+            block_size = offset
+        elif marker == IMAGE_INDEX_V1_MAGIC:
+            index_type = 1
+            block_size = offset
+
+    if header_format_version is None:
+        raise RuntimeError('Cannot determine format version.')
+    if index_type is None:
+        raise RuntimeError('Cannot determine index type.')
+    if block_size is None:
+        raise RuntimeError('Cannot determine block size.')
+    
+    return ProbeResult(header_format_version, index_type, block_size)
+    
 
 def _inv_u16_per_byte(ctx: 'Context') -> int:
     value = cast(int, ctx.checksum)
@@ -128,8 +168,8 @@ MmImageManifest = mm_class_schema(ImageManifest)
 class ImageFileV2:
     path: Path
     is_file: bool
-    metadata: ImageMetadataV2 | None = field(default=None)
-    index: ImageIndexV2 | None = field(default=None)
+    metadata: ImageMetadataV2
+    index: ImageIndexV2
     manifest: ImageManifest | None = field(default=None)
 
     def __post_init__(self):
@@ -168,10 +208,15 @@ class ImageFileV2:
             f.seek(block1_offset)
             index = CsImageIndexV2.parse_stream(f)
 
-        return cls(image_path, is_file=True, metadata=metadata, index=index)
+        return cls(image_path, True, metadata, index)
+
+    @classmethod
+    def from_manifest(cls, manifest_path: str | Path) -> Self:
+        # TODO create index and metadata out of a loaded manifest file
+        ...
 
     def build(self, output: str | Path) -> None:
-        if self.metadata is None or self.manifest is None or self.index is None:
+        if self.manifest is None:
             raise ValueError('Incomplete image file object. Building not supported.')
         
         output = Path(output)
@@ -203,7 +248,7 @@ class ImageFileV2:
             fout.write(generate_padding(fout.tell(), self.metadata.content_size, pad_byte=0xff))
 
     def extract(self, output: str | Path) -> None:
-        if self.manifest is None or self.index is None:
+        if self.manifest is None:
             raise ValueError('Incomplete image file object. Extraction not supported.')
         output = Path(output)
         output.mkdir(exist_ok=True)
@@ -218,14 +263,7 @@ class ImageFileV2:
                     bytes_left: int = entry.size
                     copyfileobjex(image_file, section_file, limit=entry.size)
 
-    @classmethod
-    def from_manifest(cls, manifest_path: str | Path) -> Self:
-        # TODO create index and metadata out of a loaded manifest file
-        ...
-
     def verify(self) -> list[bool]:
-        if self.metadata is None:
-            raise ValueError('Missing metadata. Cannot verify. Has the file been correctly parsed?')
         results: list[bool] = []
         with self.path.open('rb') as f:
             for offset, checksum in zip(
@@ -238,8 +276,6 @@ class ImageFileV2:
         return results
 
     def checksum(self) -> list[int]:
-        if self.metadata is None:
-            raise ValueError('Missing metadata. Cannot verify. Has the file been correctly parsed?')
         results: list[int] = []
         with self.path.open('rb') as f:
             for offset, _checksum in zip(

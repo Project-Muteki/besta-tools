@@ -1,4 +1,4 @@
-from typing import BinaryIO, AnyStr, TYPE_CHECKING
+from typing import BinaryIO, AnyStr, cast, TYPE_CHECKING
 from dataclasses import dataclass
 import io
 import shutil
@@ -6,6 +6,7 @@ import os
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead, SupportsWrite
+    from io import BufferedIOBase
 
 
 COPY_BUFSIZE = 1024 * 1024 if os.name == 'nt' else 64 * 1024
@@ -39,8 +40,10 @@ class BinaryBuilder:
 
     def concat(self) -> bytes:
         result = io.BytesIO()
+        
         for fragment in self._fragments:
-            result.write(fragment.data)
+            if fragment.data is not None:
+                result.write(fragment.data)
         return result.getvalue()
 
     def sizeof(self):
@@ -63,7 +66,7 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
         if bytes_left == 0:
             break
 
-        actual = input_file.readinto(buf)
+        actual = cast(BufferedIOBase, input_file).readinto(buf)  # readinto does exist in BytesIO
 
         if actual == 0:
             break
@@ -75,6 +78,7 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
             bytes_left -= actual
 
     return checksum & 0xffff
+
 
 def copyfileobjex(
     fsrc: 'SupportsRead[AnyStr]',
@@ -90,3 +94,16 @@ def copyfileobjex(
         bytes_to_read = min(length, limit)
         fdst.write(fsrc.read(bytes_to_read))
         limit -= bytes_to_read
+
+
+def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:
+    phase = 0
+    segment_counter = 0
+    for c in reversed(buf):
+        if c == 0 and phase != -1:
+            phase = -1
+            segment_counter += 1
+        elif c != 0 and phase != 1:
+            phase = 1
+            segment_counter += 1
+    return buf[-1] == 0 and segment_counter == 2
