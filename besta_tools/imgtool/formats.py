@@ -82,7 +82,8 @@ def probe_image(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) 
     f.seek(16)
     seq1 = f.read(16)
     seq2 = f.read(16)
-    if is_strictly_nul_terminated(seq1) and is_strictly_nul_terminated(seq2):
+    # seq2 (os version string) can also be empty for data header format version 2
+    if is_strictly_nul_terminated(seq1) and (is_strictly_nul_terminated(seq2) or not any(seq2)):
         header_format_version = 2
     elif is_strictly_nul_terminated(seq1[:14]) and not is_strictly_nul_terminated(seq2):
         header_format_version = 1
