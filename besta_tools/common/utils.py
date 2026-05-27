@@ -1,5 +1,6 @@
 from typing import BinaryIO, AnyStr, cast, TYPE_CHECKING
 from dataclasses import dataclass
+from itertools import islice
 import io
 import shutil
 import os
@@ -50,10 +51,64 @@ class BinaryBuilder:
         return self._last_offset
 
 
+class Checksum:
+    _init: int
+    _checksum: list[int]
+    _blksize: int | None
+    _blkremaining: int | None
+    _offset: int
+
+    def __init__(self, blksize: int | None = None, /, init: int = 0) -> None:
+        if blksize is not None and blksize <= 0:
+            raise ValueError('Block size must be greater than 0.')
+
+        self._init = init
+        self._checksum = [init]
+        self._blksize = blksize
+        self._blkremaining = blksize
+        self._offset = 0
+
+    def update(self, data: bytes | bytearray | memoryview) -> None:
+        if self._blkremaining is None:
+            self._checksum[-1] += sum(data)
+            return
+
+        assert self._blksize is not None
+
+        data_mv = memoryview(data)
+        while len(data_mv) != 0:
+            bytes_to_process = self._blkremaining
+            if len(data_mv) >= bytes_to_process:
+                self._checksum[-1] += sum(data_mv[:bytes_to_process])
+                self._blkremaining = self._blksize
+                self._checksum.append(self._init)
+            else:
+                self._checksum[-1] += sum(data_mv)
+                self._blkremaining -= len(data_mv)
+            data_mv = data_mv[bytes_to_process:]
+
+        self._offset += len(data)
+
+    def digest(self) -> list[int]:
+        gen = (c & 0xffff for c in self._checksum)
+        if self._blksize is not None and self._blkremaining == self._blksize:
+            return list(islice(gen, len(self._checksum) - 1))
+        return list(gen)
+
+    def bytes_processed(self) -> int:
+        return self._offset
+
+    def write(self, data: bytes | bytearray | memoryview) -> None:
+        self.update(data)
+    
+    def tell(self) -> int:
+        return self.bytes_processed()
+
+
 def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
     buf = bytearray(1024)
     buf_mv = memoryview(buf)
-    checksum = 0
+    checksum = Checksum()
 
     if size is None:
         old_pos = input_file.tell()
@@ -66,18 +121,21 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
         if bytes_left == 0:
             break
 
-        actual = cast(BufferedIOBase, input_file).readinto(buf)  # readinto does exist in BytesIO
+        actual = cast('BufferedIOBase', input_file).readinto(buf)  # readinto does exist in BytesIO
 
         if actual == 0:
             break
         elif actual > bytes_left:
             actual = bytes_left
 
-        checksum += sum(buf_mv[:actual])
+        checksum.update(buf_mv[:actual])
         if bytes_left is not None:
             bytes_left -= actual
 
-    return checksum & 0xffff
+    d = checksum.digest()
+    if len(d) == 0:
+        return 0
+    return d[0]
 
 
 def copyfileobjex(
@@ -107,3 +165,17 @@ def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:
             phase = 1
             segment_counter += 1
     return buf[-1] == 0 and segment_counter == 2
+
+def align(pos: int, blksize: int, greedy: bool = False) -> int:
+    return (pos // blksize * blksize) + (blksize if greedy or pos % blksize != 0 else 0)
+
+def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: int | None = None) -> bytes:
+    pad_byte_b = bytearray(1)
+    if pad_byte is not None:
+        pad_byte_b[0] = pad_byte
+    else:
+        pad_byte_b[0] = 0
+    return bytes(pad_byte_b) * (align(length, blksize, greedy=greedy) - length)
+
+def div_round_up(a: float, b: float) -> int:
+    return int(-(-a // b))

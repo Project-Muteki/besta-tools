@@ -12,7 +12,7 @@ def relative_to_root(path: pathlib.PureWindowsPath) -> pathlib.PureWindowsPath:
     return path.relative_to(path.anchor)
 
 
-def search_file(root: pathlib.Path, rel_path: str | pathlib.Path):
+def search_file(root: pathlib.Path, rel_path: str | pathlib.Path | pathlib.PurePath):
     if isinstance(rel_path, pathlib.Path) or isinstance(rel_path, pathlib.PurePath):
         rel_path = str(rel_path.as_posix())
     files = tuple(root.glob(rel_path, case_sensitive=False))
@@ -61,7 +61,7 @@ class TitleIndex:
         ]
 
         for entry in self.entries:
-            result.append(entry.path)
+            result.append(str(entry.path))
             result.append(f'{entry.checksum:#06x}')
         return '\n'.join(result)
 

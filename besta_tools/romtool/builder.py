@@ -58,7 +58,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
 
     spec_dict = cast(SpecToml, spec_dict_in)
     spec_dict_rom = spec_dict['rom']
-    spec_dict_metadata = spec_dict.get('metadata', [])
+    spec_dict_metadata = spec_dict.get('metadata', {})
 
     build_date = RomSpecTimestamp.now()
 

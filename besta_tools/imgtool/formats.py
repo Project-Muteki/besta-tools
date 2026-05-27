@@ -1,6 +1,8 @@
-from typing import BinaryIO, Self, cast, TYPE_CHECKING
+from itertools import zip_longest
+import re
+from typing import Annotated, Any, BinaryIO, Protocol, Self, cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from construct import Context
+    from _typeshed import SupportsWrite
 
 import math
 import shutil
@@ -13,7 +15,6 @@ import yaml
 
 from construct import (
     Array,
-    Computed,
     Const,
     Check,
     IfThenElse,
@@ -26,16 +27,36 @@ from construct import (
     len_
 )
 from construct_typed import DataclassMixin, DataclassStruct, csfield
+from marshmallow import ValidationError
+from marshmallow import fields as mm_fields
 from marshmallow_dataclass import dataclass as mm_dataclass
 from marshmallow_dataclass import class_schema as mm_class_schema
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import simple_checksum, copyfileobjex, is_strictly_nul_terminated
-from ..elf2bestape.utils import generate_padding
+from ..common.utils import BinaryBuilder, Checksum, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
 
 
+if TYPE_CHECKING:
+    class SupportsTell(Protocol):
+        def tell(self) -> int: ...
+
+
+    class BuilderIoObject[T_contra](SupportsTell, SupportsWrite[T_contra], Protocol):
+        pass
+
+
+IMAGE_TYPE_SYSTEM_DATA_MAGIC = 0x0001801d
 IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
-IMAGE_INDEX_V1_MAGIC = b'\x1d\x80\x01\x00'
+IMAGE_INDEX_V1_MAGIC = IMAGE_TYPE_SYSTEM_DATA_MAGIC.to_bytes(4, 'little')
+
+IMAGE_TYPE_MAP: dict[str, int] = {
+    'system-data': 0x0001801d,
+    'application-data': 0x00000000,
+}
+
+IMAGE_TYPE_MAP_R = {v: k for k, v in IMAGE_TYPE_MAP.items()}
+
+RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
 
 
 def guess_block_size_image_v2(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> int:
@@ -83,13 +104,6 @@ def probe_image(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) 
         raise RuntimeError('Cannot determine block size.')
     
     return ProbeResult(header_format_version, index_type, block_size)
-    
-
-def _inv_u16_per_byte(ctx: 'Context') -> int:
-    value = cast(int, ctx.checksum)
-    lo = value & 0xff
-    hi = (value >> 8) & 0xff
-    return (((0x100 - hi) & 0xff) << 8) | ((0x100 - lo) & 0xff)
 
 
 @dataclass
@@ -100,16 +114,21 @@ class ImageMetadataV2(DataclassMixin):
     content_size: int = csfield(Int64ul)
     data_size: int = csfield(Int64ul)
     checksum_block_size: int = csfield(Int32ul)
-    unk_0x44: int = csfield(Int32ul)
+    image_type_key: int = csfield(Int32ul)
     _padding_0x48: None = csfield(Padding(24))
     checksums: list[ChecksumValue] = csfield(IfThenElse(
         this.checksum_block_size != 0,
-        Array(this.data_size // this.checksum_block_size, CsChecksumValue),
+        Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
         Array(0, CsChecksumValue),
     ))
 
 
 CsImageMetadataV2 = DataclassStruct(ImageMetadataV2)
+
+
+# There's a bug in construct 2.9+ that prevented dynamic sizeof() being calculated.
+# Hardcode this for now.
+IMAGE_METADATA_V2_SIZEOF = 0x60
 
 
 @dataclass
@@ -128,10 +147,13 @@ IMAGE_INDEX_V2_VERSIONS: set[int] = {
 }
 
 
+IMAGE_INDEX_V2_SIZEOF = 0x40
+
+
 @dataclass
 class ImageIndexV2(DataclassMixin):
     magic: bytes = csfield(Const(IMAGE_INDEX_V2_MAGIC))
-    header_size: int = csfield(Const(0x40, Int32ul))
+    header_size: int = csfield(Const(IMAGE_INDEX_V2_SIZEOF, Int32ul))
     format_version: int = csfield(Int32ul)
     _integrity_supported_format_version: None = csfield(Check(
         lambda ctx: ctx.format_version in IMAGE_INDEX_V2_VERSIONS
@@ -150,15 +172,35 @@ class ImageManifestSection:
     align: int = field(default=1, metadata={'required': False})
 
 
+def type_validator(val: str) -> None:
+    if val not in IMAGE_TYPE_MAP.keys() and RE_IMAGE_TYPE.match(val) is None:
+        raise ValidationError(f'Invalid type value {repr(val)}')
+
+
 @mm_dataclass
 class ImageManifest:
     header_format_version: int
     index_format_version: int
     name: str
     version_string: str
+    type: Annotated[
+        str,
+        mm_fields.String(validate=type_validator)
+    ]
     block_size: int
     checksum_block_size: int
+    content_size: int
+    data_size: int
+    header_size: Annotated[int | None, mm_fields.Field(load_default=None)]
     sections: list[ImageManifestSection]
+
+    def parse_type_key(self) -> int:
+        if self.type in IMAGE_TYPE_MAP:
+            return IMAGE_TYPE_MAP[self.type]
+        m = RE_IMAGE_TYPE.match(self.type)
+        if m is None:
+            raise ValueError(f'Unknown type {repr(self.type)}')
+        return int(m.group(1))
 
 
 MmImageManifest = mm_class_schema(ImageManifest)
@@ -167,36 +209,81 @@ MmImageManifest = mm_class_schema(ImageManifest)
 @dataclass
 class ImageFileV2:
     path: Path
+    'Path to the image file if the image file exists, or the path to the manifest file if the image file is yet to be built.'
     is_file: bool
+    'True if object is backed by a real image file, False if object is backed by separate files listed in the manifest.'
     metadata: ImageMetadataV2
     index: ImageIndexV2
+    # manifest is typed as None because we have a custom default value factory
+    # that depends on the rest of the object states in case it is not passed
+    # on initialization. In practice this value will never be None.
     manifest: ImageManifest | None = field(default=None)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.manifest is None:
             self._build_manifest()
 
-    def _build_manifest(self):
+    def _build_manifest(self) -> None:
         with self.path.open('rb') as f:
             guessed_block_size = guess_block_size_image_v2(f)
 
-        align = math.gcd(*(e.offset for e in filter((lambda ee: ee.offset != 0), self.index.entries)))
-        if align == 0:
+        # Alignment value by definition must be integer multiples of every data offset value.
+        # If there's only one data entry, disable alignment.
+        if len(self.index.entries) <= 1:
             align = 1
+        else:
+            align = math.gcd(*(e.offset for e in filter((lambda ee: ee.offset != 0), self.index.entries)))
+            if align == 0:
+                align = 1
 
         sections: list[ImageManifestSection] = [
             ImageManifestSection(f'sections/{i:08x}.bin', align=align) for i in range(self.index.nentries)
         ]
 
         self.manifest = ImageManifest(
-            2,
-            self.index.format_version,
-            self.metadata.image_name,
-            self.metadata.image_version,
-            guessed_block_size,
-            self.metadata.checksum_block_size,
-            sections
+            header_format_version=2,
+            index_format_version=self.index.format_version,
+            name=self.metadata.image_name,
+            version_string=self.metadata.image_version,
+            type=IMAGE_TYPE_MAP_R.get(self.metadata.image_type_key, f'key:0x{self.metadata.image_type_key:x}'),
+            block_size=guessed_block_size,
+            checksum_block_size=self.metadata.checksum_block_size,
+            content_size=self.metadata.content_size,
+            data_size=self.metadata.data_size,
+            header_size=self.index.entries[0].offset if len(self.index.entries) > 0 else None,
+            sections=sections,
         )
+
+    def _emit_data(self, fout: 'BuilderIoObject[bytes]', pad_to_size: int | None = None):
+        assert self.manifest is not None
+
+        metadata = CsImageMetadataV2.build(self.metadata)
+        index = CsImageIndexV2.build(self.index)
+        fout.write(metadata)
+        fout.write(generate_padding(fout.tell(), self.manifest.block_size))
+        fout.write(index)
+
+        assert self.manifest.header_size is None or fout.tell() <= self.manifest.header_size, 'BUG in metadata builder: Header size over limit.'
+
+        fout.write(generate_padding(fout.tell(), self.manifest.block_size if self.manifest.header_size is None else self.manifest.header_size, pad_byte=0xff))
+
+        if not self.is_file:
+            for section, entry in zip(self.manifest.sections, self.index.entries):
+                with open(self.path.parent / section.path, 'rb') as fsec:
+                    assert entry.offset == fout.tell(), ('Attempting to place section at unexpected offset. '
+                                                         'This is likely a bug of the index builder.')
+                    shutil.copyfileobj(fsec, fout)
+                    fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+        else:
+            with self.path.open('rb') as image_file:
+                for section, entry in zip(self.manifest.sections, self.index.entries):
+                    image_file.seek(entry.offset)
+                    copyfileobjex(image_file, fout, limit=entry.size)
+                    fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+        if fout.tell() < self.metadata.content_size:
+            fout.write(generate_padding(fout.tell(), self.metadata.content_size if pad_to_size is None else pad_to_size, pad_byte=0xff))
 
     @classmethod
     def load(cls, image_path: str | Path) -> Self:
@@ -212,44 +299,89 @@ class ImageFileV2:
 
     @classmethod
     def from_manifest(cls, manifest_path: str | Path) -> Self:
-        # TODO create index and metadata out of a loaded manifest file
-        ...
+        # This is only used for offset calculation and not for actual binary building
+        bb = BinaryBuilder()
+
+        manifest_path = Path(manifest_path)
+        with manifest_path.open('r') as manifest_file:
+            manifest = cast(ImageManifest, MmImageManifest().load(cast(dict[str, Any], yaml.safe_load(manifest_file))))
+
+        assert manifest.header_format_version == 2, 'Header format version must be 2.'
+
+        header_align = manifest.block_size if manifest.header_size is None else manifest.header_size
+        header_size_actual = align(IMAGE_METADATA_V2_SIZEOF, manifest.block_size) + IMAGE_INDEX_V2_SIZEOF + CsImageIndexEntryV2.sizeof() * len(manifest.sections)
+        header_size_padded = align(header_size_actual, header_align)
+        if manifest.header_size is not None and manifest.header_size < header_size_actual:
+            raise RuntimeError(f'Header allocation over limit (max allowed: 0x{manifest.header_size:x}, actual size: 0x{header_size_actual:x}). Refusing to process further.')
+        bb.append(header_size_padded)
+
+        index_entries = []
+        frag_entries = []
+        for section in manifest.sections:
+            path = manifest_path.parent / Path(section.path)
+            real_size = path.stat().st_size
+            frag_section = bb.append(align(real_size, section.align))
+            frag_entries.append(frag_section)
+            index_entries.append(ImageIndexEntryV2(offset=frag_section.offset, size=real_size))
+
+        dummy_checksums = [ChecksumValue(checksum=0) for _ in range(div_round_up(manifest.data_size, manifest.checksum_block_size))]
+        metadata = ImageMetadataV2(
+            image_name=manifest.name,
+            image_version=manifest.version_string,
+            os_version='',
+            content_size=manifest.content_size,
+            data_size=manifest.data_size,
+            checksum_block_size=manifest.checksum_block_size,
+            image_type_key=manifest.parse_type_key(),
+            checksums=dummy_checksums,
+        )
+
+        index = ImageIndexV2(
+            format_version=manifest.index_format_version,
+            entries=index_entries,
+        )
+
+        result = cls(
+            path=manifest_path,
+            is_file=False,
+            metadata=metadata,
+            index=index,
+            manifest=manifest,
+        )
+
+        result.fix_checksum()
+
+        return result
+
+    def fix_checksum(self) -> None:
+        assert self.manifest is not None, 'BUG: Missing manifest object.'
+
+        checksum_size = div_round_up(self.metadata.data_size, self.metadata.checksum_block_size) * self.metadata.checksum_block_size
+        checksum = Checksum(self.manifest.checksum_block_size)
+
+        self._emit_data(checksum, pad_to_size=checksum_size)
+
+        d = checksum.digest()
+        if len(d) != 0:
+            # Each non-zero checksum value adds up to 0x200 instead of 0
+            fixup = sum(0x200 for c in d if c != 0)
+            d[0] = (d[0] + fixup) & 0xffff
+
+        self.metadata.checksums = [ChecksumValue(c) for c in d]
 
     def build(self, output: str | Path) -> None:
         if self.manifest is None:
             raise ValueError('Incomplete image file object. Building not supported.')
-        
+
         output = Path(output)
 
-        metadata = CsImageMetadataV2.build(self.metadata)
-        index = CsImageIndexV2.build(self.index)
-
         with output.open('wb') as fout:
-            fout.write(metadata)
-            fout.write(generate_padding(fout.tell(), self.manifest.block_size))
-            fout.write(index)
-            fout.write(generate_padding(fout.tell(), self.manifest.block_size, pad_byte=0xff))
-
-            if not self.is_file:
-                for section, entry in zip(self.manifest.sections, self.index.entries):
-                    with open(section.path, 'rb') as fsec:
-                        assert entry.offset == fout.tell(), ('Attempting to place section at unexpected offset. '
-                                                             'This is likely a bug of the index builder.')
-                        shutil.copyfileobj(fsec, fout)
-                        fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
-
-            else:
-                with self.path.open('rb') as image_file:
-                    for section, entry in zip(self.manifest.sections, self.index.entries):
-                        image_file.seek(entry.offset)
-                        copyfileobjex(image_file, fout, limit=entry.size)
-                        fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
-
-            fout.write(generate_padding(fout.tell(), self.metadata.content_size, pad_byte=0xff))
+            self._emit_data(fout)
 
     def extract(self, output: str | Path) -> None:
         if self.manifest is None:
             raise ValueError('Incomplete image file object. Extraction not supported.')
+
         output = Path(output)
         output.mkdir(exist_ok=True)
         with (output / 'manifest.yaml').open('w') as manifest_file:
@@ -260,29 +392,34 @@ class ImageFileV2:
                 section_file_path.parent.mkdir(exist_ok=True)
                 with section_file_path.open('wb') as section_file:
                     image_file.seek(entry.offset)
-                    bytes_left: int = entry.size
                     copyfileobjex(image_file, section_file, limit=entry.size)
 
     def verify(self) -> list[bool]:
-        results: list[bool] = []
-        with self.path.open('rb') as f:
-            for offset, checksum in zip(
-                    range(0, self.metadata.data_size, self.metadata.checksum_block_size),
-                    self.metadata.checksums
-            ):
-                f.seek(offset)
-                checksum_actual = simple_checksum(f, self.metadata.checksum_block_size)
-                results.append(checksum_actual == checksum.checksum)
-        return results
+        if not self.is_file:
+            raise RuntimeError('Calling verify() on a yet to be built image does not make sense.')
+        actuals = self.checksum()
+        return [actual == expected.checksum if expected is not None else False for actual, expected in zip_longest(actuals, self.metadata.checksums)]
 
     def checksum(self) -> list[int]:
-        results: list[int] = []
+        '''
+        If this object is created on a image file, compute and print the checksum block.
+        Otherwise, the precomputed checksum block during manifest load is returned instead.
+        '''
+        if not self.is_file:
+            return [checksum.checksum for checksum in self.metadata.checksums]
+
+        declared_blocks = div_round_up(self.metadata.data_size, self.metadata.checksum_block_size)
         with self.path.open('rb') as f:
-            for offset, _checksum in zip(
-                    range(0, self.metadata.data_size, self.metadata.checksum_block_size),
-                    self.metadata.checksums
-            ):
-                f.seek(offset)
-                checksum = simple_checksum(f, self.metadata.checksum_block_size)
-                results.append(checksum)
-        return results
+            checksum = Checksum(self.metadata.checksum_block_size)
+            while True:
+                data = f.read(0x100000)
+                if len(data) == 0:
+                    break
+                checksum.update(data)
+
+        d = checksum.digest()
+        pad_blocks = declared_blocks - len(d)
+        if pad_blocks > 0:
+            d.extend([0] * pad_blocks)
+
+        return d
