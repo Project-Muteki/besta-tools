@@ -1,6 +1,6 @@
 from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from construct import Context
+    from construct import Context, Construct, Default, ListContainer
 
 import dataclasses
 from construct import (
@@ -34,3 +34,9 @@ class ChecksumValue(DataclassMixin):
 
 
 CsChecksumValue = DataclassStruct(ChecksumValue)
+
+# The type definition here for Default is wrong. Default accepts a tuple as a default value for list
+# but the type indicates that it only accepts a list.
+# Cast to Any for now to disable type checking.
+def ArrayDefault[T](subcon: Construct[ListContainer[T], list[T]], value: tuple[T, ...]) -> Default[ListContainer[T], list[T]]:
+    return Default(subcon, cast(list[T], value))
