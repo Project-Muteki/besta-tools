@@ -1,7 +1,7 @@
 import dataclasses
 import datetime
 
-from construct import Byte, Const, Default, Int16ul, Int32ul, this
+from construct import Byte, Const, Default, Int16ul, Int32ul
 from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, FlagsEnumBase, TFlagsEnum, csfield
 
 from ..common.formats import CsChecksumValue, ChecksumValue
@@ -99,7 +99,7 @@ class RomSpecType(DataclassMixin):
     unk_0x58: int = csfield(Default(Int32ul, 0xffffffff))
     subtype: int = csfield(Int32ul)
     unk_0x60: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x64: list[int] = csfield(Default(Int32ul[7], tuple([0xffffffff] * 7)))
+    unk_0x64: list[int] = csfield(Default(Int32ul[7], [0xffffffff] * 7))
 
 
 CsRomSpecType = DataclassStruct(RomSpecType)
@@ -120,9 +120,9 @@ CsRomFallbackTitle = DataclassStruct(RomFallbackTitle)
 
 @dataclasses.dataclass
 class RomExtMetadataHeader(DataclassMixin):
-    unk_0x0: list[int] = csfield(Default(Int32ul[5], tuple([0xffffffff] * 5)))
+    unk_0x0: list[int] = csfield(Default(Int32ul[5], [0xffffffff] * 5))
     num_localized_title_entries: int = csfield(Int32ul)
-    unk_0x18: list[int] = csfield(Default(Int32ul[3], tuple([0xffffffff] * 3)))
+    unk_0x18: list[int] = csfield(Default(Int32ul[3], [0xffffffff] * 3))
 
 
 CsRomExtMetadataHeader = DataclassStruct(RomExtMetadataHeader)

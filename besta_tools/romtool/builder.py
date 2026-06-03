@@ -1,4 +1,4 @@
-from typing import Final, TypedDict, NotRequired, Sequence, cast, Mapping
+from typing import Final, TypedDict, NotRequired, cast, Mapping
 
 import io
 
@@ -27,7 +27,7 @@ SpecTomlRomSection = TypedDict('SpecTomlRomSection', {
     'version': str,
     'copyright': str,
     'sdk-id': NotRequired[str],
-    'default-locale': NotRequired[str | int],
+    'default-locale': NotRequired[str],
     'icon': NotRequired[str],
 })
 
@@ -86,7 +86,7 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
 
     for element, (locale_str, metadata) in zip(localized_title_elements_alloc, spec_dict_metadata.items()):
         title_fragment = add_to_strtab(metadata['title'])
-        short_title_fragment = add_to_strtab(metadata['short-title'])
+        short_title_fragment = add_to_strtab(metadata['short-title'] if 'short-title' in metadata else metadata['title'])
 
         encoded_element_index = RomLocalizedTitleEntry(
             locale=LOCALE_MAPPING[locale_str],
@@ -140,7 +140,9 @@ def build_embeddable_from_spec_file(spec_dict_in: dict):
             else int(spec_dict_rom['category'])
         ),
         checksum=checksum_value,
-        default_locale=RomLocale.FORCE_UTF16 | LOCALE_MAPPING[spec_dict_rom['default-locale']],
+        default_locale=RomLocale.FORCE_UTF16 | LOCALE_MAPPING[
+            spec_dict_rom['default-locale'] if 'default-locale' in spec_dict_rom else 'en'
+        ],
         sections_offset=0,
         build_timestamp=build_date,
         rom_size=builder.sizeof(),

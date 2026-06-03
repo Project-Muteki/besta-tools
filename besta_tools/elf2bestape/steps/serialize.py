@@ -20,10 +20,17 @@ def serialize(context: ImageBuildContext):
     pe_file = context['output']
     args = context['args']
 
+    assert 'dos_header_dict' in context
+    assert 'nt_header_dict' in context
+    assert 'file_header_dict' in context
+    assert 'optional_header_dict' in context
+    assert 'directory_dicts' in context
+    assert 'section_dicts' in context
     assert 'text_data' in context
     #assert 'rdata_data' in context
     assert 'data_data' in context
     assert 'reloc_data' in context
+    assert 'segment_load_file_size' in context
 
     dos_header = pefile_struct_from_dict(
         pefile.PE.__IMAGE_DOS_HEADER_format__,
@@ -107,6 +114,7 @@ def serialize(context: ImageBuildContext):
             pe_file.write(data[0])
             pe_file.write(generate_padding(pe_file.tell(), 0x200, greedy=data.greedy))
     actual_image_size = len(pe_file.getvalue())
+    assert 'expected_image_size' in context
     assert actual_image_size == context['expected_image_size'], \
         (f'Inconsistent generated image size vs calculated '
          f'(expecting {context['expected_image_size']:#x}, got {actual_image_size:#x}).')

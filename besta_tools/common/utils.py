@@ -166,8 +166,10 @@ def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:
             segment_counter += 1
     return buf[-1] == 0 and segment_counter == 2
 
+
 def align(pos: int, blksize: int, greedy: bool = False) -> int:
     return (pos // blksize * blksize) + (blksize if greedy or pos % blksize != 0 else 0)
+
 
 def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: int | None = None) -> bytes:
     pad_byte_b = bytearray(1)
@@ -176,6 +178,7 @@ def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: 
     else:
         pad_byte_b[0] = 0
     return bytes(pad_byte_b) * (align(length, blksize, greedy=greedy) - length)
+
 
 def div_round_up(a: float, b: float) -> int:
     return int(-(-a // b))
