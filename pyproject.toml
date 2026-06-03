@@ -15,7 +15,7 @@ construct-typing = "^0.6.2"
 marshmallow-dataclass = "^8.7.0"
 pyyaml = "^6.0.1"
 pyusb = "^1.2.1"
-libusb-package = "^1.0.26.3"
+libusb-package = { version = "^1.0.26.3", optional = true }
 filetype = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
@@ -28,6 +28,9 @@ mypy = "^1.17.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.extras]
+prebuilt-libusb = ["libusb-package"]
 
 [tool.poetry.scripts]
 elf2bestape = 'besta_tools.elf2bestape:main'

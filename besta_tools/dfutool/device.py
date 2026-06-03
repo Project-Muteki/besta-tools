@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import usb.core
-import libusb_package
+
+try:
+    import libusb_package
+    libusb_backend = libusb_package.get_libusb1_backend()
+except ImportError:
+    libusb_backend = None
 
 
 @dataclass
@@ -83,7 +88,7 @@ def trim_nul_terminated(value: str | None) -> str | None:
 
 
 def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device]]:
-    for dev in usb.core.find(find_all=True, backend=libusb_package.get_libusb1_backend()):
+    for dev in usb.core.find(find_all=True, backend=libusb_backend):
         try:
             device_type_key = (
                 cast(int | None, dev.idVendor),
