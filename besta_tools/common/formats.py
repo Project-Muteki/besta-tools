@@ -1,10 +1,11 @@
 from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from construct import Context, Construct, Default, ListContainer
+    from construct import Context, Construct, ListContainer
 
 import dataclasses
 from construct import (
     Check,
+    Default,
     Int16ul,
     Rebuild,
     this
