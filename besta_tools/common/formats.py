@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from construct import Context, Construct, ListContainer

@@ -32,6 +32,8 @@ from marshmallow import fields as mm_fields
 from marshmallow_dataclass import dataclass as mm_dataclass
 from marshmallow_dataclass import class_schema as mm_class_schema
 
+from filetype import guess_extension
+
 from ..common.formats import CsChecksumValue, ChecksumValue
 from ..common.utils import BinaryBuilder, Checksum, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
 
@@ -57,6 +59,8 @@ IMAGE_TYPE_MAP: dict[str, int] = {
 IMAGE_TYPE_MAP_R = {v: k for k, v in IMAGE_TYPE_MAP.items()}
 
 RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
+
+MAGIC_PROBE_SIZE = 1 * 1024 * 1024  # 1MiB
 
 
 def guess_block_size_image_v2(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> int:
@@ -225,6 +229,15 @@ class ImageFileV2:
             self._build_manifest()
 
     def _build_manifest(self) -> None:
+        def _gen_section_name(entries: list[ImageIndexEntryV2]):
+            for i, entry in enumerate(entries):
+                probe_size = min(entry.size, MAGIC_PROBE_SIZE)
+                with self.path.open('rb') as f:
+                    f.seek(entry.offset)
+                    probe_data = f.read(probe_size)
+                    probe_result: str = guess_extension(probe_data) or 'bin'
+                yield f'sections/{i:08x}.{probe_result}'
+
         with self.path.open('rb') as f:
             guessed_block_size = guess_block_size_image_v2(f)
 
@@ -238,7 +251,7 @@ class ImageFileV2:
                 align = 1
 
         sections: list[ImageManifestSection] = [
-            ImageManifestSection(f'sections/{i:08x}.bin', align=align) for i in range(self.index.nentries)
+            ImageManifestSection(name, align=align) for name in _gen_section_name(self.index.entries)
         ]
 
         self.manifest = ImageManifest(
