@@ -1,4 +1,6 @@
-from typing import cast
+from __future__ import annotations
+
+from typing import Any, cast
 from collections.abc import Generator, Sequence
 
 from dataclasses import dataclass
@@ -87,12 +89,12 @@ def trim_nul_terminated(value: str | None) -> str | None:
     return value[:first_zero]
 
 
-def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device]]:
+def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device[Any, Any]]]:
     for dev in usb.core.find(find_all=True, backend=libusb_backend):
         try:
             device_type_key = (
-                cast(int | None, dev.idVendor),
-                cast(int | None, dev.idProduct),
+                dev.idVendor,
+                dev.idProduct,
                 trim_nul_terminated(dev.manufacturer),
                 trim_nul_terminated(dev.product)
             )

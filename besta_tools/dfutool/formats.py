@@ -1,16 +1,15 @@
-from typing import cast, TYPE_CHECKING
-if TYPE_CHECKING:
-    from construct import Context, Const, Construct
-
-import dataclasses
-from enum import IntEnum, IntFlag
+from dataclasses import dataclass
+from enum import IntEnum
 
 from construct import (
     Bytes,
+    Const,
     Default,
     Int8ul,
     Int32ul,
-    this
+    Rebuild,
+    len_,
+    this,
 )
 from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFlagsEnum, csfield
 
@@ -36,21 +35,36 @@ class BestaDfuCommand(FlagsEnumBase):
 CsBestaDfuCommand = TFlagsEnum(Int32ul, BestaDfuCommand)
 
 
-@dataclasses.dataclass
+@dataclass
 class CBW(DataclassMixin):
     dCBWSignature: int = csfield(Const(USBMS_CBW_MAGIC, Int32ul))
     dCBWTag: int = csfield(Int32ul)
     dCBWDataTransferLength: int = csfield(Int32ul)
     bmCBWFlags: int = csfield(Int8ul)
     bCBWLUN: int = csfield(Int8ul)
-    bCBWCBLength: int = csfield(Int8ul)
+    bCBWCBLength: int = csfield(Rebuild(Int8ul, len_(this.CBWCB)))
+    CBWCB: bytes | bytearray = csfield(Bytes(this.bCBWCBLength))
 
 
-@dataclasses.dataclass
+CsCBW = DataclassStruct(CBW)
+
+
+@dataclass
+class CSW(DataclassMixin):
+    dCSWSignature: int = csfield(Const(USBMS_CSW_MAGIC, Int32ul))
+    dCSWTag: int = csfield(Int32ul)
+    dCSWDataResidue: int = csfield(Int32ul)
+    bCSWStatus: int = csfield(Int8ul)
+
+
+CsCSW = DataclassStruct(CSW)
+
+
+@dataclass
 class BestaDfuConfigPacket(DataclassMixin):
     command: int = csfield(CsBestaDfuCommand)
     parameter: int = csfield(Int32ul)
-    payload: bytes = csfield(Default(Bytes(256), b'\x00' * 256))
+    payload: bytes | bytearray = csfield(Default(Bytes(256), b'\x00' * 256))
 
 
 CsBestaDfuConfigPacket = DataclassStruct(BestaDfuConfigPacket)
