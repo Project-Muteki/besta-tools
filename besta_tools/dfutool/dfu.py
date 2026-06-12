@@ -7,13 +7,17 @@ from typing import Any
 
 from random import randrange
 
-from usb.core import Device, Endpoint, Interface
+from usb.core import Device, Endpoint, Interface, USBError
 from usb.util import ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, find_descriptor
 from usb.legacy import CLASS_MASS_STORAGE
 
-from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CsBestaDfuConfigPacket, CsCBW, CsCSW
+from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CSWError, CsBestaDfuConfigPacket, CsCBW, CsCSW
 
-from .usbms_const import USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI
+from .usbms_const import SCSI_CMD_READ10, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI
+
+
+class BestaNACK(RuntimeError):
+    pass
 
 
 class DfuDevice:
@@ -118,9 +122,20 @@ class DfuDevice:
         res = CsBestaDfuConfigPacket.parse(res_data)
         return ret, res
 
+    def scsi_read10(self, lba: int, blks: int, flags: int = 0, group: int = 0, control: int = 0) -> tuple[CSW, bytes]:
+        scsi_cmd = bytearray(10)
+        scsi_cmd[0] = SCSI_CMD_READ10
+        scsi_cmd[1] = flags
+        scsi_cmd[2:6] = lba.to_bytes(4, 'big')
+        scsi_cmd[6] = group & 0b11111
+        scsi_cmd[7:9] = blks.to_bytes(2, 'big')
+        scsi_cmd[9] = control
+        ret, res_data = self.cmd_read(scsi_cmd, blks * 512)
+        return ret, res_data
+
     @staticmethod
-    def besta_check_ack(packet: BestaDfuConfigPacket, cmd: BestaDfuCommand, param: int) -> bool:
-        return packet.command == cmd | BestaDfuCommand.ACK and packet.parameter == param | BestaDfuCommand.ACK
+    def besta_check_ack(packet: BestaDfuConfigPacket, cmd: BestaDfuCommand, param: int | None = None) -> bool:
+        return packet.command == cmd | BestaDfuCommand.ACK and (param is None or packet.parameter == param | BestaDfuCommand.ACK)
 
     def ping(self) -> bool:
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG)
@@ -139,4 +154,14 @@ class DfuDevice:
             print('NACK', res)
             return False
 
-    #def set_progress(self, value: int): ...
+    def set_progress(self, value: int) -> None:
+        ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_SET_PROGRESS, value)
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        ret, res = self.scsi_besta_get_config()
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        if not self.besta_check_ack(res, BestaDfuCommand.CMD_SET_PROGRESS):
+            raise BestaNACK('Device NACKed the DFU request.')

@@ -16,6 +16,21 @@ from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFla
 from .usbms_const import *
 
 
+class CSWError(RuntimeError):
+    STATUS_MAP: dict[int, str] = {
+        0: 'Command passed',
+        1: 'Command failed',
+        2: 'Phase error',
+    }
+
+    def __init__(self, status: int, *args):
+        super().__init__(*args)
+        self.status = status
+    
+    def __str__(self) -> str:
+        return f'[bCSWStatus={self.status}] {self.STATUS_MAP.get(self.status, '')}'
+
+
 class BestaDfuSbcOpcode(IntEnum):
     SET_CONFIG = 0x88
     GET_CONFIG = 0x89
