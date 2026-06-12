@@ -3,17 +3,19 @@ from __future__ import annotations
 # Some resource on how to interface with USB mass storage devices without a driver:
 # https://www.downtowndougbrown.com/2018/12/usb-mass-storage-with-embedded-devices-tips-and-quirks/
 
-from typing import Any
+from array import array
+from typing import Any, cast
 
 from random import randrange
 
-from usb.core import Device, Endpoint, Interface, USBError
-from usb.util import ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, find_descriptor
-from usb.legacy import CLASS_MASS_STORAGE
+from usb import RECIP_INTERFACE
+from usb.core import Device, Endpoint, Interface
+from usb.util import CTRL_IN, ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, find_descriptor
+from usb.legacy import CLASS_MASS_STORAGE, TYPE_CLASS
 
 from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CSWError, CsBestaDfuConfigPacket, CsCBW, CsCSW
 
-from .usbms_const import SCSI_CMD_READ10, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI
+from .usbms_const import SCSI_CMD_READ10, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI, USBMS_REQ_BBB_GET_MAX_LUN
 
 
 class BestaNACK(RuntimeError):
@@ -26,8 +28,13 @@ class DfuDevice:
     in_ep: Endpoint[Any, Any]
     out_ep: Endpoint[Any, Any]
     lun: int
+    _max_lun: int
+    _restore_driver: bool
+    _closed: bool
 
     def __init__(self, dev: Device[Any, Any]):
+        self._restore_driver = False
+        self._closed = False
         self.dev = dev
 
         intf: Interface | None = None
@@ -40,15 +47,15 @@ class DfuDevice:
             )
             if intf is None:
                 continue
-            self.dev.detach_kernel_driver(intf.bInterfaceNumber)
+            if self.dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                self.dev.detach_kernel_driver(intf.bInterfaceNumber)
+                self._restore_driver = True
             self.dev.set_configuration(cfg.bConfigurationValue)
             break
 
         if intf is None:
             raise TypeError(f'Device {dev.address} does not seem to have a SCSI interface.')
         self.intf = intf
-
-        #self.dev.detach_kernel_driver(self.intf.bInterfaceNumber)
 
         in_ep = find_descriptor(self.intf, custom_match=lambda ep: endpoint_direction(ep.bEndpointAddress) == ENDPOINT_IN)
         out_ep = find_descriptor(self.intf, custom_match=lambda ep: endpoint_direction(ep.bEndpointAddress) == ENDPOINT_OUT)
@@ -57,9 +64,25 @@ class DfuDevice:
             raise TypeError(f'Device {dev.address} does not properly declare required endpoints.')
 
         self.in_ep, self.out_ep = in_ep, out_ep
+
+        # GET_MAX_LUN is required, or the device refuses to talk to us.
+        result = self.dev.ctrl_transfer(
+            CTRL_IN | TYPE_CLASS | RECIP_INTERFACE,
+            USBMS_REQ_BBB_GET_MAX_LUN,
+            data_or_wLength=1,
+        )
+        assert isinstance(result, array)
+        self._max_lun = result[0]
+
         # Assume first lun
         # TODO: Look up LUNs or allow user to specify one (is this necessary?)
         self.lun = 0
+
+    def close(self) -> None:
+        if self._restore_driver:
+            self.dev.attach_kernel_driver(self.intf.bInterfaceNumber)
+        del self.dev, self.intf, self.in_ep, self.out_ep
+        self._closed = True
 
     def cmd_write(self, cmd: bytes | bytearray, data: bytes | None = None) -> CSW:
         '''
