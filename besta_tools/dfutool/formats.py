@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import NamedTuple, Self
 
 from construct import (
     Bytes,
@@ -38,6 +39,7 @@ class BestaDfuSbcOpcode(IntEnum):
 
 class BestaDfuCommand(FlagsEnumBase):
     CMD_PING_ARG = 0xbead
+    CMD_REBOOT = 0xbec1
     CMD_ERASE_AND_SCAN = 0xbec2
     CMD_PROBE_REGION = 0xbec5
     CMD_UPLOAD_BOOTLOADER = 0xbec6
@@ -83,3 +85,23 @@ class BestaDfuConfigPacket(DataclassMixin):
 
 
 CsBestaDfuConfigPacket = DataclassStruct(BestaDfuConfigPacket)
+
+
+class ReadCapacity10Response(NamedTuple):
+    nlba: int
+    sector_size: int
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> Self:
+        if len(data) != 8:
+            raise ValueError('Data length must be 8.')
+
+        mv = memoryview(data)
+        return cls(
+            int.from_bytes(mv[0:4], 'big'),
+            int.from_bytes(mv[4:8], 'big'),
+        )
+
+    @property
+    def size_bytes(self) -> int:
+        return self.nlba * self.sector_size

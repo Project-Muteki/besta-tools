@@ -1,3 +1,4 @@
+from io import BufferedReader
 from itertools import zip_longest
 import re
 from typing import Annotated, Any, BinaryIO, Protocol, Self, cast, TYPE_CHECKING
@@ -63,7 +64,7 @@ RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
 MAGIC_PROBE_SIZE = 1 * 1024 * 1024  # 1MiB
 
 
-def guess_block_size_image_v2(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> int:
+def guess_block_size_image_v2(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> int:
     for offset in range(0, search_limit, step_size):
         f.seek(offset)
         if f.read(step_size)[:4] == IMAGE_INDEX_V2_MAGIC:
@@ -78,7 +79,7 @@ class ProbeResult:
     block_size: int
 
 
-def probe_image(f: BinaryIO, search_limit: int = 0x100000, step_size: int = 16) -> ProbeResult:
+def probe_image(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> ProbeResult:
     header_format_version = None
     block_size = None
     index_type = None

@@ -27,7 +27,7 @@ class DfuType:
     def emit_udev_rule(self):
         return (
             f'# {self.description}\n'
-            f'SUBSYSTEM="usb", ATTR{{idVendor}}=="{self.vid:04x}", ATTR{{idProduct}}=="{self.pid:04x}", '
+            f'SUBSYSTEM=="usb", ATTR{{idVendor}}=="{self.vid:04x}", ATTR{{idProduct}}=="{self.pid:04x}", '
             f'ATTR{{manufacturer}}=="{self.manufacturer}", ATTR{{product}}=="{self.product}", TAG+="uaccess"\n'
             f'DRIVER=="usb-storage", ACTION=="add", ATTRS{{idVendor}}=="{self.vid:04x}", ATTRS{{idProduct}}=="{self.pid:04x}", '
             f'ATTRS{{manufacturer}}=="{self.manufacturer}", ATTRS{{product}}=="{self.product}", '
