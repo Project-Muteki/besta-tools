@@ -1,7 +1,7 @@
 from io import BufferedReader
 from itertools import zip_longest
 import re
-from typing import Annotated, Any, BinaryIO, Protocol, Self, cast, TYPE_CHECKING
+from typing import Annotated, Any, Protocol, Self, cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite
 
@@ -11,7 +11,6 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-#import filetype
 import yaml
 
 from construct import (
@@ -36,7 +35,7 @@ from marshmallow_dataclass import class_schema as mm_class_schema
 from filetype import guess_extension
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import BinaryBuilder, Checksum, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
+from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
 
 
 if TYPE_CHECKING:
@@ -61,7 +60,7 @@ IMAGE_TYPE_MAP_R = {v: k for k, v in IMAGE_TYPE_MAP.items()}
 
 RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
 
-MAGIC_PROBE_SIZE = 1 * 1024 * 1024  # 1MiB
+MAGIC_PROBE_SIZE = 8192  # 8KiB, as per the default of filetype
 
 
 def guess_block_size_image_v2(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> int:
@@ -330,8 +329,8 @@ class ImageFileV2:
             raise RuntimeError(f'Header allocation over limit (max allowed: 0x{manifest.header_size:x}, actual size: 0x{header_size_actual:x}). Refusing to process further.')
         bb.append(header_size_padded)
 
-        index_entries = []
-        frag_entries = []
+        index_entries: list[ImageIndexEntryV2] = []
+        frag_entries: list[Fragment] = []
         for section in manifest.sections:
             path = manifest_path.parent / Path(section.path)
             real_size = path.stat().st_size

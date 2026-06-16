@@ -1,13 +1,12 @@
-from typing import BinaryIO, AnyStr, cast, TYPE_CHECKING
+from typing import AnyStr, TYPE_CHECKING
 from dataclasses import dataclass
 from itertools import islice
-import io
+from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
 import shutil
 import os
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead, SupportsWrite
-    from io import BufferedIOBase
 
 
 COPY_BUFSIZE = 1024 * 1024 if os.name == 'nt' else 64 * 1024
@@ -40,7 +39,7 @@ class BinaryBuilder:
         return result
 
     def concat(self) -> bytes:
-        result = io.BytesIO()
+        result = BytesIO()
         
         for fragment in self._fragments:
             if fragment.data is not None:
@@ -105,15 +104,16 @@ class Checksum:
         return self.bytes_processed()
 
 
-def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
+def simple_checksum(input_file: BufferedReader, size: int | None = None) -> int:
     buf = bytearray(1024)
     buf_mv = memoryview(buf)
     checksum = Checksum()
+    bytes_left: int
 
     if size is None:
         old_pos = input_file.tell()
-        bytes_left = input_file.seek(0, io.SEEK_END) - old_pos
-        input_file.seek(old_pos, io.SEEK_SET)
+        bytes_left = input_file.seek(0, SEEK_END) - old_pos
+        input_file.seek(old_pos, SEEK_SET)
     else:
         bytes_left = size
 
@@ -121,7 +121,7 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
         if bytes_left == 0:
             break
 
-        actual = cast('BufferedIOBase', input_file).readinto(buf)  # readinto does exist in BytesIO
+        actual = input_file.readinto(buf)  # readinto does exist in BytesIO
 
         if actual == 0:
             break
@@ -129,8 +129,7 @@ def simple_checksum(input_file: BinaryIO, size: int | None = None) -> int:
             actual = bytes_left
 
         checksum.update(buf_mv[:actual])
-        if bytes_left is not None:
-            bytes_left -= actual
+        bytes_left -= actual
 
     d = checksum.digest()
     if len(d) == 0:

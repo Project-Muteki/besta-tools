@@ -1,4 +1,4 @@
-from typing import TextIO, BinaryIO, Any, Self, Optional, Literal
+from typing import TextIO, Self
 
 import click
 import dataclasses
@@ -47,7 +47,7 @@ class TitleIndex:
         overall_checksum = int(file.readline(), 16)
         num_files = int(file.readline())
         entries: list[TitleChecksumEntry] = []
-        for i in range(num_files):
+        for _ in range(num_files):
             path = file.readline()
             checksum = file.readline()
             entries.append(TitleChecksumEntry(pathlib.PureWindowsPath(path.rstrip()), int(checksum, 16)))

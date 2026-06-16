@@ -92,7 +92,7 @@ def trim_nul_terminated(value: str | None) -> str | None:
     return value[:first_zero]
 
 
-def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device[Any, Any]]]:
+def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device]]:
     for dev in usb.core.find(find_all=True, backend=libusb_backend):
         try:
             device_type_key = (

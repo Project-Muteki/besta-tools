@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-# Some resource on how to interface with USB mass storage devices without a driver:
+# Some resource on how to interface with USB mass storage devices without dedicated OS support:
 # https://www.downtowndougbrown.com/2018/12/usb-mass-storage-with-embedded-devices-tips-and-quirks/
 
 from array import array
+from contextlib import AbstractContextManager
 from errno import EIO
-from typing import TYPE_CHECKING, Any, Final
-from io import SEEK_CUR, SEEK_END, SEEK_SET, RawIOBase
+from typing import TYPE_CHECKING, Final, override
+from io import SEEK_CUR, SEEK_END, SEEK_SET, BufferedRandom, BufferedReader, BufferedWriter, RawIOBase
 from os import strerror
 from random import randrange
+import weakref
 
 from usb import RECIP_INTERFACE
 from usb.core import Device, Endpoint, Interface, USBError
@@ -21,6 +23,7 @@ from .usbms_const import SCSI_CMD_READ10, SCSI_CMD_READ_CAPACITY10, SCSI_CMD_TES
 
 if TYPE_CHECKING:
     from _typeshed import MaybeNone, ReadableBuffer, WriteableBuffer
+    from types import TracebackType
 
 
 # Maximum bulk transfer size. Currently only used for SCSI data transfers.
@@ -32,12 +35,21 @@ class BestaNACK(RuntimeError):
     pass
 
 
-class DfuDevice:
-    dev: Device[Any, Any]
-    intf: Interface[Any, Any]
-    in_ep: Endpoint[Any, Any]
-    out_ep: Endpoint[Any, Any]
+# TODO: currently the device and/or the buffered I/O handle must be closed
+# before the program exits (which, any well-written program should do anyway),
+# or the BufferedRandom wrapper will attempt to flush the write buffer by
+# accessing the device when it's already finalized (use-after-free).
+# We might need to hook into the Device class so that it can be aware of the
+# lifecycle of DfuDevice and its children.
+
+
+class DfuDevice(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument], we're using it as an ABC
+    dev: Device
+    intf: Interface
+    in_ep: Endpoint
+    out_ep: Endpoint
     lun: int
+    _lun_instances: list[Lun]
 
     _max_lun: int
     _capacity: ReadCapacity10Response
@@ -45,10 +57,11 @@ class DfuDevice:
     _restore_driver: bool
     _closed: bool
 
-    def __init__(self, dev: Device[Any, Any]):
+    def __init__(self, dev: Device):
         self._restore_driver = False
         self._closed = False
         self.dev = dev
+        self._lun_instances = []
 
         intf: Interface | None = None
         for cfg in dev:
@@ -87,27 +100,42 @@ class DfuDevice:
         assert isinstance(result, array)
         self._max_lun = result[0]
 
-    def __del__(self):
-        # TODO destructor chain
-        if not self._closed:
-            self.close()
+    @override
+    def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
 
     def close(self) -> None:
+        if self._closed:
+            return
+
+        for i in self._lun_instances:
+            i.close()
+        self._lun_instances.clear()
         if self._restore_driver:
             self.dev.attach_kernel_driver(self.intf.bInterfaceNumber)
         del self.dev, self.intf, self.in_ep, self.out_ep
+
         self._closed = True
 
+    def flush_all_lun(self) -> None:
+        for i in self._lun_instances:
+            i.flush_all_io()
+
     def get_lun(self, lun: int) -> Lun:
-        return Lun(self, lun)
+        i = Lun(self, lun)
+        self._lun_instances.append(i)
+        return i
 
 
-class Lun:
+class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument], we're using it as an ABC
     dev: DfuDevice
     lun: int
     _capacity: ReadCapacity10Response
-
-    # TODO destructor chain
+    _io_instances: list[DfuIo]
+    _bio_instances: list[BufferedReader | BufferedWriter | BufferedRandom]
 
     @property
     def capacity(self) -> ReadCapacity10Response:
@@ -115,7 +143,9 @@ class Lun:
 
     def __init__(self, dev: DfuDevice, lun: int) -> None:
         self.lun = lun
-        self.dev = dev
+        self.dev = weakref.proxy(dev)
+        self._io_instances = []
+        self._bio_instances = []
 
         ready = False
         for _ in range(3):
@@ -132,8 +162,44 @@ class Lun:
 
         _, self._capacity = self.scsi_read_capacity10()
 
+    def __del__(self) -> None:
+        self.close()
+
+    @override
+    def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
+        self.close()
+
+    def close(self) -> None:
+        for i in self._bio_instances:
+            i.close()
+        self._bio_instances.clear()
+        for ii in self._io_instances:
+            ii.close()
+        self._io_instances.clear()
+
+    def flush_all_io(self) -> None:
+        for i in self._bio_instances:
+            i.flush()
+
     def get_io(self) -> DfuIo:
-        return DfuIo(self)
+        i = DfuIo(self)
+        self._io_instances.append(i)
+        return i
+
+    def get_buffered_io(self) -> BufferedRandom:
+        i = BufferedRandom(DfuIo(self))
+        self._bio_instances.append(i)
+        return i
+
+    def get_buffered_reader(self) -> BufferedReader:
+        i = BufferedReader(DfuIo(self))
+        self._bio_instances.append(i)  # pyright: ignore[reportArgumentType], mypy doesn't like it with generics
+        return i  # pyright: ignore[reportReturnType]
+
+    def get_buffered_writer(self) -> BufferedWriter:
+        i = BufferedWriter(DfuIo(self))
+        self._bio_instances.append(i)  # pyright: ignore[reportArgumentType], mypy doesn't like it with generics
+        return i  # pyright: ignore[reportReturnType]
 
     def scsi_raw_write(self, cmd: bytes | bytearray, data: bytes | None = None) -> CSW:
         '''
@@ -303,6 +369,8 @@ class Lun:
             raise BestaNACK('Device NACKed the DFU request.')
 
     def reboot(self) -> None:
+        # Signal the parent to flush all children, including ourselves
+        self.dev.flush_all_lun()
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_REBOOT, 0)
         if ret.bCSWStatus != 0:
             raise CSWError(ret.bCSWStatus)
@@ -332,10 +400,8 @@ class DfuIo(RawIOBase):
     _lba: int
     _boffset: int
 
-    # TODO destructor chain
-
     def __init__(self, lun: Lun):
-        self._lun = lun
+        self._lun = weakref.proxy(lun)
         self._lba = 0
         self._boffset = 0
         self._lbasize = lun.capacity.sector_size
@@ -369,6 +435,7 @@ class DfuIo(RawIOBase):
             # Cut-off the partial block I/O within the multi-block I/O
             return new_lba - lba, 0, new_lba, 0
 
+    @override
     def read(self, size: int = -1, /) -> bytes | MaybeNone:
         '''
         Read bytes up to size.
@@ -396,6 +463,7 @@ class DfuIo(RawIOBase):
 
         return data
 
+    @override
     def readinto(self, buffer: WriteableBuffer, /) -> int | MaybeNone:
         # TODO optimize
         mv = memoryview(buffer)
@@ -404,6 +472,7 @@ class DfuIo(RawIOBase):
 
         return len(buf)
 
+    @override
     def write(self, b: ReadableBuffer, /) -> int | MaybeNone:
         mv = memoryview(b)
         size = len(mv)
@@ -427,7 +496,7 @@ class DfuIo(RawIOBase):
         if lpad == 0 and rpad == 0:
             written = blks * self._lbasize
             wbuf = mv[:written]
-            print('whole lba', lba, 'data', mv[:written].hex())
+            #print('whole lba', lba, 'data', mv[:written].hex())
         elif rpad != 0:
             res, data = self._lun.scsi_read10(lba, 1)
             if res.bCSWStatus != 0:
@@ -436,7 +505,7 @@ class DfuIo(RawIOBase):
             data_a[lpad:rpad] = mv[:rpad - lpad]
             assert len(data_a) % self._lbasize == 0
             wbuf = data_a
-            print('single lba', lba, 'data', data_a.hex())
+            #print('single lba', lba, 'data', data_a.hex())
             written = rpad - lpad
         else:
             res, data = self._lun.scsi_read10(lba, 1)
@@ -448,13 +517,16 @@ class DfuIo(RawIOBase):
             data_a.extend(mv[:written])
             assert len(data_a) % self._lbasize == 0
             wbuf = data_a
-            print('multiple lba', lba, 'data', data_a.hex())
+            #print('multiple lba', lba, 'data', data_a.hex())
 
-        # TODO
-        #self._lun.scsi_write10(lba, bytes(wbuf))
+        res = self._lun.scsi_write10(lba, bytes(wbuf))
+        if res.bCSWStatus != 0:
+           raise IOError(EIO, strerror(EIO))
+
         self._lba, self._boffset = new_lba, new_boffset
         return written
 
+    @override
     def seek(self, offset: int, whence: int = SEEK_SET, /) -> int:
         blksize = self._lbasize
 
@@ -468,14 +540,18 @@ class DfuIo(RawIOBase):
 
         return self.tell()
 
+    @override
     def tell(self) -> int:
         return self._lba * self._lbasize + self._boffset
 
+    @override
     def readable(self) -> bool:
         return True
 
+    @override
     def writable(self) -> bool:
         return True
 
+    @override
     def seekable(self) -> bool:
         return True
