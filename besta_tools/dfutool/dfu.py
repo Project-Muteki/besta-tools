@@ -6,7 +6,7 @@ from __future__ import annotations
 from array import array
 from contextlib import AbstractContextManager
 from errno import EIO
-from typing import TYPE_CHECKING, Final, override
+from typing import TYPE_CHECKING, Final, Self, cast, override
 from io import SEEK_CUR, SEEK_END, SEEK_SET, BufferedRandom, BufferedReader, BufferedWriter, RawIOBase
 from os import strerror
 from random import randrange
@@ -19,7 +19,7 @@ from usb.legacy import CLASS_MASS_STORAGE, TYPE_CLASS
 
 from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CSWError, CsBestaDfuConfigPacket, CsCBW, CsCSW, ReadCapacity10Response
 
-from .usbms_const import SCSI_CMD_READ10, SCSI_CMD_READ_CAPACITY10, SCSI_CMD_TEST_UNIT_READY, SCSI_CMD_WRITE10, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI, USBMS_REQ_BBB_GET_MAX_LUN
+from .usbms_const import SCSI_CMD_INQUIRY, SCSI_CMD_READ10, SCSI_CMD_READ_CAPACITY10, SCSI_CMD_TEST_UNIT_READY, SCSI_CMD_WRITE10, SCSI_INQUIRY_HEADER_F1_RMB, SCSI_INQUIRY_PERIF_QUALIFIER_LOADED, SCSI_INQUIRY_PERIF_TYPE_DIRECT, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI, USBMS_REQ_BBB_GET_MAX_LUN
 
 if TYPE_CHECKING:
     from _typeshed import MaybeNone, ReadableBuffer, WriteableBuffer
@@ -48,8 +48,7 @@ class DfuDevice(AbstractContextManager):  # pyright: ignore[reportMissingTypeArg
     intf: Interface
     in_ep: Endpoint
     out_ep: Endpoint
-    lun: int
-    _lun_instances: list[Lun]
+    _lun_instances: dict[int, Lun]
 
     _max_lun: int
     _capacity: ReadCapacity10Response
@@ -61,7 +60,7 @@ class DfuDevice(AbstractContextManager):  # pyright: ignore[reportMissingTypeArg
         self._restore_driver = False
         self._closed = False
         self.dev = dev
-        self._lun_instances = []
+        self._lun_instances = {}
 
         intf: Interface | None = None
         for cfg in dev:
@@ -100,6 +99,15 @@ class DfuDevice(AbstractContextManager):  # pyright: ignore[reportMissingTypeArg
         assert isinstance(result, array)
         self._max_lun = result[0]
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @override
+    def __enter__(self) -> Self:
+        # TODO: We have to do this or basedpyright will complain about random things. Is it a bug?
+        return cast(Self, super().__enter__())
+
     @override
     def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
         self.close()
@@ -111,49 +119,107 @@ class DfuDevice(AbstractContextManager):  # pyright: ignore[reportMissingTypeArg
         if self._closed:
             return
 
-        for i in self._lun_instances:
-            i.close()
+        for i in self._lun_instances.values():
+            if not i.closed:
+                i.close()
         self._lun_instances.clear()
+
         if self._restore_driver:
             self.dev.attach_kernel_driver(self.intf.bInterfaceNumber)
         del self.dev, self.intf, self.in_ep, self.out_ep
 
         self._closed = True
 
+    @property
+    def max_lun(self) -> int:
+        '''
+        ID of the last LUN available on this device.
+        '''
+        return self._max_lun
+
     def flush_all_lun(self) -> None:
-        for i in self._lun_instances:
-            i.flush_all_io()
+        '''
+        Call flush_all_io() on all opened LUNs.
+        '''
+        for i in self._lun_instances.values():
+            if not i.closed:
+                i.flush_all_io()
 
     def get_lun(self, lun: int) -> Lun:
-        i = Lun(self, lun)
-        self._lun_instances.append(i)
+        '''
+        Open a LUN.
+        '''
+        if lun > self._max_lun:
+            raise ValueError(f'Invalid LUN {lun}.')
+
+        i: Lun | None = self._lun_instances.get(lun)
+        if i is None or i.closed:
+            i = Lun(self, lun)
+            self._lun_instances[lun] = i
+
         return i
+
+    def get_dfu_lun(self) -> Lun:
+        for lun in range(self._max_lun + 1):
+            i = self.get_lun(lun)
+            if i.is_removable_disk():
+                return i
+        raise RuntimeError(f'No matching DFU LUN found for device at Bus {self.dev.bus:03d} Address {self.dev.address:03d}. Is it in DFU mode?')
 
 
 class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument], we're using it as an ABC
     dev: DfuDevice
     lun: int
+
+    _inquiry_result: bytes
     _capacity: ReadCapacity10Response
     _io_instances: list[DfuIo]
     _bio_instances: list[BufferedReader | BufferedWriter | BufferedRandom]
+    _closed: bool
 
     @property
     def capacity(self) -> ReadCapacity10Response:
+        '''
+        Device capacity as reported by Read Capacity(10).
+        '''
         return self._capacity
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def vendor(self) -> bytes:
+        return self._inquiry_result[8:16]
+
+    @property
+    def product(self) -> bytes:
+        return self._inquiry_result[16:32]
+
+    @property
+    def revision(self) -> bytes:
+        return self._inquiry_result[32:36]
 
     def __init__(self, dev: DfuDevice, lun: int) -> None:
         self.lun = lun
         self.dev = weakref.proxy(dev)
+
         self._io_instances = []
         self._bio_instances = []
+        self._closed = False
 
         ready = False
         for _ in range(3):
             try:
                 ret = self.scsi_test_unit_ready()
-                if ret.bCSWStatus == 0:
-                    ready = True
-                    break
+                if ret.bCSWStatus != 0:
+                    continue
+                ret, inquiry = self.scsi_inquiry(36)
+                if ret.bCSWStatus != 0:
+                    continue
+                self._inquiry_result = inquiry
+                ready = True
+                break
             except USBError:
                 continue
 
@@ -166,40 +232,95 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         self.close()
 
     @override
+    def __enter__(self) -> Self:
+        # TODO: We have to do this or basedpyright will complain about random things. Is it a bug?
+        return cast(Self, super().__enter__())
+
+    @override
     def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
         self.close()
 
     def close(self) -> None:
+        '''
+        Close all child I/O instances.
+        '''
         for i in self._bio_instances:
-            i.close()
+            if not i.closed:
+                i.close()
         self._bio_instances.clear()
         for ii in self._io_instances:
-            ii.close()
+            if not ii.closed:
+                ii.close()
         self._io_instances.clear()
+        self._closed = True
 
     def flush_all_io(self) -> None:
+        '''
+        Flush all buffered I/O objects.
+        '''
         for i in self._bio_instances:
-            i.flush()
+            if not i.closed:
+                i.flush()
 
     def get_io(self) -> DfuIo:
+        '''
+        Create a new Raw I/O object tied to this LUN.
+        '''
         i = DfuIo(self)
         self._io_instances.append(i)
         return i
 
     def get_buffered_io(self) -> BufferedRandom:
+        '''
+        Create a new Buffered I/O object tied to this LUN.
+
+        It's recommended to use this helper instead of wrapping the Raw I/O
+        object yourself so the instance can be closed safely with the parent
+        Device/LUN. However currently the lifetime of the underlying USB
+        device may be shorter than the I/O objects that use it, so you must
+        at least flush any I/O objects before exiting the interpreter, or the
+        interpreter may crash and data may be lost.
+        '''
         i = BufferedRandom(DfuIo(self))
         self._bio_instances.append(i)
         return i
 
     def get_buffered_reader(self) -> BufferedReader:
+        '''
+        Create a new Buffered Reader object tied to this LUN.
+
+        It's recommended to use this helper instead of wrapping the Raw I/O
+        object yourself so the instance can be closed safely with the parent
+        Device/LUN. However currently the lifetime of the underlying USB
+        device may be shorter than the I/O objects that use it, so you must
+        at least flush any I/O objects before exiting the interpreter, or the
+        interpreter may crash and data may be lost.
+        '''
         i = BufferedReader(DfuIo(self))
         self._bio_instances.append(i)  # pyright: ignore[reportArgumentType], mypy doesn't like it with generics
         return i  # pyright: ignore[reportReturnType]
 
     def get_buffered_writer(self) -> BufferedWriter:
+        '''
+        Create a new Buffered Writer object tied to this LUN.
+
+        It's recommended to use this helper instead of wrapping the Raw I/O
+        object yourself so the instance can be closed safely with the parent
+        Device/LUN. However currently the lifetime of the underlying USB
+        device may be shorter than the I/O objects that use it, so you must
+        at least flush any I/O objects before exiting the interpreter, or the
+        interpreter may crash and data may be lost.
+        '''
         i = BufferedWriter(DfuIo(self))
         self._bio_instances.append(i)  # pyright: ignore[reportArgumentType], mypy doesn't like it with generics
         return i  # pyright: ignore[reportReturnType]
+
+    def is_removable_disk(self) -> bool:
+        inq = self._inquiry_result
+        return (
+            inq[0] == SCSI_INQUIRY_PERIF_QUALIFIER_LOADED | SCSI_INQUIRY_PERIF_TYPE_DIRECT and
+            inq[1] & SCSI_INQUIRY_HEADER_F1_RMB == SCSI_INQUIRY_HEADER_F1_RMB
+        )
 
     def scsi_raw_write(self, cmd: bytes | bytearray, data: bytes | None = None) -> CSW:
         '''
@@ -244,7 +365,8 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
 
     def scsi_raw_read_into(self, cmd: bytes | bytearray, buf: array[int] | None = None) -> tuple[CSW, int]:
         '''
-        Send a read SCSI command and optionally request data.
+        Send a read SCSI command and optionally request data to be put into
+        `buf`. Returns the CSW and number of bytes received.
         '''
         tag = randrange(0, 0x100000000)
         cbw = CBW(
@@ -265,6 +387,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         return csw, read_size
 
     def scsi_besta_set_config(self, cmd: BestaDfuCommand, param: int, data: bytes | None = None) -> CSW:
+        '''
+        Issue a Besta DFU Set Config command with the specified command code,
+        parameter and optional data.
+        '''
         req = BestaDfuConfigPacket(
             command=cmd,
             parameter=param
@@ -278,6 +404,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         return self.scsi_raw_write(scsi_cmd, CsBestaDfuConfigPacket.build(req))
 
     def scsi_besta_get_config(self) -> tuple[CSW, BestaDfuConfigPacket]:
+        '''
+        Issue a Besta DFU Get Config command and return the response from the
+        device.
+        '''
         scsi_cmd = bytearray(16)
         scsi_cmd[0] = BestaDfuSbcOpcode.GET_CONFIG
         ret, res_data = self.scsi_raw_read(scsi_cmd, CsBestaDfuConfigPacket.sizeof())
@@ -319,8 +449,6 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
     def scsi_read_capacity10(self, control: int = 0) -> tuple[CSW, ReadCapacity10Response]:
         '''
         Issue a SCSI Read Capacity(10) command.
-
-        Windows seems to call this every time before doing Read(10) and Write(10).
         '''
         scsi_cmd = bytearray(10)
         scsi_cmd[0] = SCSI_CMD_READ_CAPACITY10
@@ -329,17 +457,35 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         return ret, ReadCapacity10Response.from_bytes(res_data)
 
     def scsi_test_unit_ready(self, control: int = 0) -> CSW:
+        '''
+        Issue a SCSI Test Unit Ready command.
+        '''
         scsi_cmd = bytearray(6)
         scsi_cmd[0] = SCSI_CMD_TEST_UNIT_READY
         scsi_cmd[5] = control
         ret = self.scsi_raw_write(scsi_cmd)
         return ret
 
+    def scsi_inquiry(self, len: int, page: int = 0, control: int = 0) -> tuple[CSW, bytes]:
+        '''
+        Issue a SCSI Inquiry command.
+        '''
+        scsi_cmd = bytearray(6)
+        scsi_cmd[0] = SCSI_CMD_INQUIRY
+        scsi_cmd[1:3] = page.to_bytes(2, 'big')
+        scsi_cmd[4] = len
+        scsi_cmd[5] = control
+        ret, res_data = self.scsi_raw_read(scsi_cmd, len)
+        return ret, res_data
+
     @staticmethod
     def besta_check_ack(packet: BestaDfuConfigPacket, cmd: BestaDfuCommand, param: int | None = None) -> bool:
         return packet.command == cmd | BestaDfuCommand.ACK and (param is None or packet.parameter == param | BestaDfuCommand.ACK)
 
     def ping(self) -> bool:
+        '''
+        Ping the device.
+        '''
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG)
         if ret.bCSWStatus != 0:
             print('SET_CONFIG bCSWStatus error', ret)
@@ -357,6 +503,13 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             return False
 
     def set_progress(self, value: int) -> None:
+        '''
+        Set the value of the on-device progress bar. Vaule must be between 0
+        and 100 (inclusive).
+        '''
+        if value < 0 or value > 100:
+            raise ValueError('Value must be between 0 and 100.')
+
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_SET_PROGRESS, value)
         if ret.bCSWStatus != 0:
             raise CSWError(ret.bCSWStatus)
@@ -369,6 +522,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             raise BestaNACK('Device NACKed the DFU request.')
 
     def reboot(self) -> None:
+        '''
+        Flush all child I/O (if applicable), reboot target device and close the
+        parent device.
+        '''
         # Signal the parent to flush all children, including ourselves
         self.dev.flush_all_lun()
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_REBOOT, 0)
@@ -406,6 +563,10 @@ class DfuIo(RawIOBase):
         self._boffset = 0
         self._lbasize = lun.capacity.sector_size
 
+    def _check_closed(self) -> None:
+        if self.closed:
+            raise ValueError(f'I/O operation on closed I/O object')
+
     def _plan_io(self, size: int) -> tuple[int, int, int, int]:
         '''
         Plan I/O operation, taking the current LBA byte offset into account.
@@ -435,11 +596,29 @@ class DfuIo(RawIOBase):
             # Cut-off the partial block I/O within the multi-block I/O
             return new_lba - lba, 0, new_lba, 0
 
+    def _tell(self) -> int:
+        '''
+        Return the current offset.
+
+        Used internally by seek(). External users should use the default tell()
+        implementation instead.
+        '''
+        return self._lba * self._lbasize + self._boffset
+
+    # We override read() and point readinto() to here because pyusb does not
+    # use buffer protocol properly and instead is hardcoded to only take an
+    # array('B') as buffer. Thus implementing readinto() and using the default
+    # read() implementation based on read() will actually yield worse
+    # performance.
+    # It's possible to send a patch to pyusb to fix this but that's another
+    # story for another day.
     @override
     def read(self, size: int = -1, /) -> bytes | MaybeNone:
         '''
         Read bytes up to size.
         '''
+        self._check_closed()
+
         if size < 0 or size > MAX_BULK_XFER_SIZE:
             size = MAX_BULK_XFER_SIZE
         elif size == 0:
@@ -465,7 +644,6 @@ class DfuIo(RawIOBase):
 
     @override
     def readinto(self, buffer: WriteableBuffer, /) -> int | MaybeNone:
-        # TODO optimize
         mv = memoryview(buffer)
         buf = self.read(len(mv))
         mv[:len(buf)] = buf
@@ -474,6 +652,8 @@ class DfuIo(RawIOBase):
 
     @override
     def write(self, b: ReadableBuffer, /) -> int | MaybeNone:
+        self._check_closed()
+
         mv = memoryview(b)
         size = len(mv)
 
@@ -489,7 +669,7 @@ class DfuIo(RawIOBase):
 
         lpad = self._boffset
         blks, rpad, new_lba, new_boffset = self._plan_io(size)
-        print(blks, rpad, new_lba, new_boffset)
+        #print(blks, rpad, new_lba, new_boffset)
 
         written: int
         wbuf: memoryview | bytearray
@@ -528,30 +708,34 @@ class DfuIo(RawIOBase):
 
     @override
     def seek(self, offset: int, whence: int = SEEK_SET, /) -> int:
+        self._check_closed()
+
         blksize = self._lbasize
 
         if whence == SEEK_SET:
             self._lba, self._boffset = divmod(offset, blksize)
         elif whence == SEEK_CUR:
-            old_off = self.tell()
-            self._lba, self._boffset = divmod(old_off + offset, blksize)
+            if offset != 0:
+                old_off = self._tell()
+                self._lba, self._boffset = divmod(old_off + offset, blksize)
         elif whence == SEEK_END:
             self._lba, self._boffset = divmod(blksize * self._lun.capacity.nlba + offset, blksize)
+        else:
+            raise ValueError(f'Unsupported whence {whence}')
 
-        return self.tell()
-
-    @override
-    def tell(self) -> int:
-        return self._lba * self._lbasize + self._boffset
+        return self._tell()
 
     @override
     def readable(self) -> bool:
+        self._check_closed()
         return True
 
     @override
     def writable(self) -> bool:
+        self._check_closed()
         return True
 
     @override
     def seekable(self) -> bool:
+        self._check_closed()
         return True

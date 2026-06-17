@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
 from collections.abc import Generator, Sequence
 
 from dataclasses import dataclass
