@@ -1,9 +1,13 @@
-from typing import AnyStr, TYPE_CHECKING
+from click._termui_impl import ProgressBar
+from typing import Any, AnyStr, TYPE_CHECKING
 from dataclasses import dataclass
 from itertools import islice
 from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
 import shutil
 import os
+
+import click
+from typing_extensions import Never
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead, SupportsWrite
@@ -147,10 +151,31 @@ def copyfileobjex(
         shutil.copyfileobj(fsrc, fdst, length)
         return
 
+    w = fdst.write
+    r = fsrc.read
+
     while limit > 0:
         bytes_to_read = min(length, limit)
-        fdst.write(fsrc.read(bytes_to_read))
+        w(r(bytes_to_read))
         limit -= bytes_to_read
+
+
+def copyfileobjex_progress(
+    fsrc: 'SupportsRead[AnyStr]',
+    fdst: 'SupportsWrite[AnyStr]',
+    limit: int,
+    length: int = COPY_BUFSIZE,
+) -> None:
+    w = fdst.write
+    r = fsrc.read
+
+    pb: ProgressBar[Never] = click.progressbar(length=limit)
+    with pb:
+        while limit > 0:
+            bytes_to_read = min(length, limit)
+            w(r(bytes_to_read))
+            limit -= bytes_to_read
+            pb.update(bytes_to_read)
 
 
 def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:

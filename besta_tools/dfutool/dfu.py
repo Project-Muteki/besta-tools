@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
 
 # Maximum bulk transfer size. Currently only used for SCSI data transfers.
-# 1MiB should be reasonable for all backends, but we need to test this.
-MAX_BULK_XFER_SIZE: Final[int] = 1 * 1024 * 1024
+# usbtool seems to do 16KiB here and large values may crash the device.
+MAX_BULK_XFER_SIZE: Final[int] = 16 * 1024
 
 
 class BestaNACK(RuntimeError):
