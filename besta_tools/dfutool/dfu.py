@@ -526,11 +526,13 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         Flush all child I/O (if applicable), reboot target device and close the
         parent device.
         '''
-        # Signal the parent to flush all children, including ourselves
+        # Signal the parent to flush all children, including ourselves. Ignoring all
+        # errors because sometimes the device disconnects before it could reply.
         self.dev.flush_all_lun()
-        ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_REBOOT, 0)
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        try:
+            _ = self.scsi_besta_set_config(BestaDfuCommand.CMD_REBOOT, 0)
+        except USBError:
+            pass
         self.dev.close()
 
 
@@ -574,13 +576,12 @@ class DfuIo(RawIOBase):
         Returns the number of blocks to read/write and the right buffer trim
         offset.
         '''
-        nlba = self._lun.capacity.nlba
         boffset = self._boffset
         lbasize = self._lbasize
         lba = self._lba
 
         # Limit size to be within the boundary of remaining data.
-        total_size = nlba * lbasize
+        total_size = self._lun.capacity.size_bytes
         current_offset = lba * lbasize + boffset
         size = min(size, max(0, total_size - current_offset))
 
@@ -624,9 +625,9 @@ class DfuIo(RawIOBase):
         elif size == 0:
             return b''
 
-        nlba = self._lun.capacity.nlba
+        max_lba = self._lun.capacity.max_lba
         lba = self._lba
-        if nlba <= lba:
+        if max_lba < lba:
             return b''
 
         ltrim = self._boffset
@@ -662,9 +663,9 @@ class DfuIo(RawIOBase):
         elif size == 0:
             return 0
 
-        nlba = self._lun.capacity.nlba
+        max_lba = self._lun.capacity.max_lba
         lba = self._lba
-        if nlba <= lba:
+        if max_lba < lba:
             return 0
 
         lpad = self._boffset
@@ -719,7 +720,7 @@ class DfuIo(RawIOBase):
                 old_off = self._tell()
                 self._lba, self._boffset = divmod(old_off + offset, blksize)
         elif whence == SEEK_END:
-            self._lba, self._boffset = divmod(blksize * self._lun.capacity.nlba + offset, blksize)
+            self._lba, self._boffset = divmod(blksize * (self._lun.capacity.max_lba + 1) + offset, blksize)
         else:
             raise ValueError(f'Unsupported whence {whence}')
 

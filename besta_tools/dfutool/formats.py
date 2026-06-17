@@ -90,7 +90,7 @@ CsBestaDfuConfigPacket = DataclassStruct(BestaDfuConfigPacket)
 
 
 class ReadCapacity10Response(NamedTuple):
-    nlba: int
+    max_lba: int
     sector_size: int
 
     @classmethod
@@ -106,4 +106,4 @@ class ReadCapacity10Response(NamedTuple):
 
     @property
     def size_bytes(self) -> int:
-        return self.nlba * self.sector_size
+        return (self.max_lba + 1) * self.sector_size
