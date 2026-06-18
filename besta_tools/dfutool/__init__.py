@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from io import SEEK_END, BufferedReader, BufferedWriter
+from pathlib import Path
 import sys
 import traceback
 from typing import TYPE_CHECKING
@@ -10,7 +11,7 @@ import click
 from usb.core import Device
 
 from besta_tools.common.utils import copyfileobjex_progress
-from besta_tools.dfutool.device import enumerate_device
+from besta_tools.dfutool.device import enumerate_device, generate_udev_file
 from besta_tools.dfutool.dfu import DfuDevice
 
 if TYPE_CHECKING:
@@ -283,3 +284,27 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
                 sys.exit(1)
             copyfileobjex_progress(input_, wr, limit)
         click.echo('Done.')
+
+@app.command(
+    name='generate-udev-rule',
+    short_help='Generate udev rule file.',
+    help=(
+        '''
+        Generate udev rules file and place it at specified path.
+
+        The rules set the uaccess tag to allow non-root access of the device,
+        and automatically detach the Linux USB Mass Storage driver from listed
+        devices as there is a potential for the driver to interfere with them
+        and cause undesired and potentially dangerous effect.
+        '''
+    ),
+)
+@click.option(
+    '-o', '--output',
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=Path('./42-besta.rules'),
+    help='Path to generated file.',
+)
+def do_generate_udev_rule(output: Path) -> None:
+    generate_udev_file(output)
+    click.echo(f'udev file {output} has been generated.')

@@ -59,6 +59,14 @@ class DfuType:
 
 KNOWN_DEVICE_TYPES: Sequence[DfuType] = (
     DfuType(
+        name='tlcs900',
+        description='TLCS-900 family bootloader',
+        vid=0x0537,
+        pid=0xa703,
+        manufacturer='Removable',
+        product='UDisk',
+    ),
+    DfuType(
         name='s3c',
         description='S3C2416 family bootloader',
         vid=0x054b,

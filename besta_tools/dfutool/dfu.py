@@ -6,6 +6,8 @@ from __future__ import annotations
 from array import array
 from contextlib import AbstractContextManager
 from errno import EIO
+import time
+import traceback
 from typing import TYPE_CHECKING, Final, Self, cast, override
 from io import SEEK_CUR, SEEK_END, SEEK_SET, BufferedRandom, BufferedReader, BufferedWriter, RawIOBase
 from os import strerror
@@ -209,7 +211,7 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         self._closed = False
 
         ready = False
-        for _ in range(3):
+        for _ in range(10):
             try:
                 ret = self.scsi_test_unit_ready()
                 if ret.bCSWStatus != 0:
@@ -221,10 +223,15 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
                 ready = True
                 break
             except USBError:
+                # Clear STALL and wait 100ms before retrying in case the device
+                # is just being slow.
+                self.dev.in_ep.clear_halt()
+                self.dev.out_ep.clear_halt()
+                time.sleep(0.1)
                 continue
 
         if not ready:
-            raise RuntimeError('SCSI device not ready.')
+            raise RuntimeError(f'Timeout waiting for SCSI LUN {lun} to identify itself.')
 
         _, self._capacity = self.scsi_read_capacity10()
 
