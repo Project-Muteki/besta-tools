@@ -10,6 +10,7 @@ from construct import (
     Default,
     Int8ul,
     Int32ul,
+    Padded,
     Rebuild,
     len_,
     this,
@@ -64,7 +65,7 @@ class CBW(DataclassMixin):
     bmCBWFlags: int = csfield(Int8ul)
     bCBWLUN: int = csfield(Int8ul)
     bCBWCBLength: int = csfield(Rebuild(Int8ul, len_(this.CBWCB)))
-    CBWCB: bytes | bytearray = csfield(Bytes(this.bCBWCBLength))
+    CBWCB: bytes | bytearray = csfield(Padded(16, Bytes(this.bCBWCBLength)))
 
 
 CsCBW = DataclassStruct(CBW)

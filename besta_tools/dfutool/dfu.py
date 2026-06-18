@@ -213,10 +213,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         ready = False
         for _ in range(10):
             try:
-                ret = self.scsi_test_unit_ready()
+                ret, inquiry = self.scsi_inquiry(36)
                 if ret.bCSWStatus != 0:
                     continue
-                ret, inquiry = self.scsi_inquiry(36)
+                ret = self.scsi_test_unit_ready()
                 if ret.bCSWStatus != 0:
                     continue
                 self._inquiry_result = inquiry
