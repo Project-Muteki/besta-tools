@@ -76,12 +76,14 @@ class TitleIndex:
         self.overall_checksum = sum(entry.checksum for entry in self.entries) & 0xffff
 
 
-@click.group()
+@click.group(
+    help='Applet title index manager.',
+)
 def app():
     pass
 
 
-@app.command('init', help='Initialize an title index file.')
+@app.command('init', help='Initialize an title index file at PATH.')
 @click.argument('path', type=click.Path(exists=True))
 @click.option('-f', '--force', is_flag=True, help='Overwrite any existing title index file.')
 def do_init(path: str, force: bool):
@@ -100,7 +102,7 @@ def do_init(path: str, force: bool):
         TitleIndex.from_scratch().to_file(f)
 
 
-@app.command('validate', help='Validate a user data root.')
+@app.command('validate', help='Validate a user data root at PATH.')
 @click.argument('path', type=click.Path(exists=True))
 @click.option('-m', '--metadata-only', is_flag=True, help='Only check index consistency.')
 @click.option('-e', '--encoding', default='cp936', help='Encoding type to use (default is cp936).')

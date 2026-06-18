@@ -1,4 +1,5 @@
-from typing import Final, TypedDict, NotRequired, cast, Mapping
+from typing import Final, TypedDict, NotRequired, cast
+from collections.abc import Mapping
 
 import io
 
@@ -42,6 +43,7 @@ class SpecToml(TypedDict):
     metadata: NotRequired[Mapping[str, SpecTomlMetadataElement]]
 
 
+# TODO: add proper validator to the spec file.
 def build_embeddable_from_spec_file(spec_dict_in: dict):
     str_table: dict[str, Fragment] = {}
 

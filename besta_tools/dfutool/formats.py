@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import NamedTuple, Self
+from typing import NamedTuple, Self, override
 
 from construct import (
     Bytes,
@@ -25,11 +25,13 @@ class CSWError(RuntimeError):
         1: 'Command failed',
         2: 'Phase error',
     }
+    status: int
 
-    def __init__(self, status: int, *args):
+    def __init__(self, status: int, *args: object) -> None:
         super().__init__(*args)
         self.status = status
-    
+
+    @override
     def __str__(self) -> str:
         return f'[bCSWStatus={self.status}] {self.STATUS_MAP.get(self.status, '')}'
 

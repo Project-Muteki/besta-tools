@@ -14,8 +14,15 @@ def app():
     pass
 
 
-@app.command(name='verify')
-@click.argument('image', type=click.Path(file_okay=True, readable=True))
+@app.command(
+    name='verify',
+    short_help='Verify the IMAGE with the builtin checksum block.',
+    help='Verify the IMAGE with the builtin checksum block.',
+)
+@click.argument(
+    'image',
+    type=click.Path(file_okay=True, readable=True),
+)
 def do_verify(image: str):
     # TODO: replace this with a proper dispatcher class
     with open(image, 'rb') as f:
@@ -35,9 +42,23 @@ def do_verify(image: str):
         sys.exit(1)
 
 
-@app.command(name='build')
-@click.argument('manifest', type=click.Path(dir_okay=True, readable=True))
-@click.option('-o', '--output', type=click.Path(file_okay=True, writable=True))
+@app.command(
+    name='build',
+    short_help='Build the image from a MANIFEST file.',
+    help='Build the image from a MANIFEST file.',
+)
+@click.argument(
+    'manifest',
+    type=click.Path(dir_okay=True, readable=True),
+)
+@click.option(
+    '-o', '--output',
+    type=click.Path(file_okay=True, writable=True),
+    help=(
+        'Path to the output file. If not specified, only validate the ' +
+        'input MANIFEST and do not build anything.'
+    )
+)
 def do_build(manifest: str, output: str | None):
     image_obj = ImageFileV2.from_manifest(manifest)
     if output is not None:
@@ -46,9 +67,23 @@ def do_build(manifest: str, output: str | None):
         click.echo('Manifest is valid but no output specified. Not generating image.')
 
 
-@app.command(name='extract')
-@click.argument('image', type=click.Path(file_okay=True, readable=True, path_type=Path))
-@click.option('-o', '--output-dir', type=click.Path(writable=True, path_type=Path))
+@app.command(
+    name='extract',
+    short_help='Extract an IMAGE file.',
+    help='Extract an IMAGE file.',
+)
+@click.argument(
+    'image',
+    type=click.Path(file_okay=True, readable=True, path_type=Path),
+)
+@click.option(
+    '-o', '--output-dir',
+    type=click.Path(writable=True, path_type=Path),
+    help=(
+        'Path to the output directory (defaults to the IMAGE path without ' +
+        'suffix i.e. system/BA101.DAT -> system/BA101).'
+    ),
+)
 def do_extract(image: Path, output_dir: Path | None):
     image_obj = ImageFileV2.load(image)
     click.echo(f'Image loaded. Found {len(image_obj.index.entries)} objects.')
@@ -58,8 +93,15 @@ def do_extract(image: Path, output_dir: Path | None):
     click.echo(f'Extracted {len(image_obj.index.entries)} objects under {output_dir}.')
 
 
-@app.command(name='info')
-@click.argument('image', type=click.Path(file_okay=True, readable=True, path_type=Path))
+@app.command(
+    name='info',
+    short_help='Print details of an IMAGE file.',
+    help='Print details of an IMAGE file.',
+)
+@click.argument(
+    'image',
+    type=click.Path(file_okay=True, readable=True, path_type=Path),
+)
 def do_info(image: Path):
     image_obj = ImageFileV2.load(image)
     assert image_obj.manifest is not None

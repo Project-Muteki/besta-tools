@@ -1,5 +1,5 @@
 from click._termui_impl import ProgressBar
-from typing import Any, AnyStr, TYPE_CHECKING
+from typing import AnyStr, TYPE_CHECKING
 from dataclasses import dataclass
 from itertools import islice
 from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
@@ -108,7 +108,7 @@ class Checksum:
         return self.bytes_processed()
 
 
-def simple_checksum(input_file: BufferedReader, size: int | None = None) -> int:
+def simple_checksum(input_file: BufferedReader | BytesIO, size: int | None = None) -> int:
     buf = bytearray(1024)
     buf_mv = memoryview(buf)
     checksum = Checksum()

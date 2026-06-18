@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from construct import Context, ConstantOrContextLambda, Construct, ListContainer
 
@@ -42,4 +42,4 @@ CsChecksumValue = DataclassStruct(ChecksumValue)
 # but the type indicates that it only accepts a list.
 # Cast to Any for now to disable type checking.
 def ArrayDefault[T](subcon: Construct[ListContainer[T], list[T]], value: ConstantOrContextLambda[tuple[T, ...]]) -> Default[ListContainer[T], list[T]]:
-    return Default(subcon, cast(ConstantOrContextLambda[list[T]], value))
+    return Default(subcon, cast(Any, value))

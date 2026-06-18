@@ -4,14 +4,37 @@ from collections.abc import Generator, Sequence
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, cast, overload
 
 import usb.core
+from usb.backend import libusb1
 
-try:
-    import libusb_package
-    libusb_backend = libusb_package.get_libusb1_backend()
-except ImportError:
-    libusb_backend = None
+if TYPE_CHECKING:
+    from usb.backend.libusb1 import _LibUSB
+
+libusb_backend: _LibUSB
+
+
+def _resolve_backend() ->_LibUSB:
+    try:
+        import libusb_package  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        libusb_backend = cast(_LibUSB, libusb_package.get_libusb1_backend())
+    except ImportError:
+        libusb_backend = None
+
+
+    if libusb_backend is None:
+        libusb_backend = libusb1.get_backend()
+        if libusb_backend is None:
+            raise RuntimeError(
+                'Cannot use libusb1 backend. Make sure libusb 1.x is installed ' +
+                'properly if you installed it manually, or reinstall ' +
+                'besta-tools with the [prebuilt-libusb] option.'
+            )
+    return libusb_backend
+
+
+libusb_backend = _resolve_backend()
 
 
 @dataclass
@@ -81,7 +104,12 @@ def generate_udev_file(path: Path) -> None:
             udev_file.write(dev_type.emit_udev_rule())
             udev_file.write('\n')
 
-
+@overload
+def trim_nul_terminated(value: None) -> None: ...
+@overload
+def trim_nul_terminated(value: str) -> str: ...
+@overload
+def trim_nul_terminated(value: str | None) -> str | None: ...
 def trim_nul_terminated(value: str | None) -> str | None:
     if value is None:
         return None
