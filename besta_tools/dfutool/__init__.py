@@ -77,11 +77,40 @@ def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
         return None
 
 
-@click.group(help='Tool for interfacing with Besta DFU.')
-@click.option('-d', '--device-index', type=int, default=0, help='Use the device at this index as shown in the . This is used when no USB address nor device type is provided.')
-@click.option('-t', '--device-type', default=None, help='use the first device of this type. This is used over the device index but not the USB address.')
-@click.option('-U', '--usb-address', type=UsbAddress, default=None, help='Use the USB device with a specific address. The address must be in the form of Bus:Address (e.g. 001:001). This takes the highest priority.')
-@click.option('-y', '--yes/--no-yes', help='Assume yes to questions (DANGER).')
+@click.group(
+    help='Tool for interfacing with Besta DFU.'
+)
+@click.option(
+    '-d', '--device-index',
+    type=int,
+    default=0,
+    help=(
+        'Use the device at this index as shown in the list command. ' +
+        'This is used when no USB address nor device type is provided.'
+    )
+)
+@click.option(
+    '-t', '--device-type',
+    default=None,
+    help=(
+        'Use the first device of this type. This is used over the device ' +
+        'index but not the USB address.'
+    )
+)
+@click.option(
+    '-U', '--usb-address',
+    type=UsbAddress,
+    default=None,
+    help=(
+        'Use the USB device with a specific address. The address must be ' +
+        'in the form of Bus:Address (e.g. 001:001). This takes the highest ' +
+        'priority.'
+    )
+)
+@click.option(
+    '-y', '--yes/--no-yes',
+    help='Assume yes to all questions (DANGEROUS).'
+)
 @click.pass_context
 def app(ctx: click.Context, device_index: int, device_type: str | None, usb_address: UsbAddress | None, yes: bool):
     a = ctx.ensure_object(GlobalOptions)
@@ -91,7 +120,10 @@ def app(ctx: click.Context, device_index: int, device_type: str | None, usb_addr
     a.yes = yes
 
 
-@app.command(name='list', short_help='List available devices.')
+@app.command(
+    name='list',
+    short_help='List available devices.'
+)
 def do_list() -> None:
     found_at_least_one = False
     for idx, (kind, dev) in enumerate(enumerate_device()):
@@ -112,7 +144,10 @@ def do_list() -> None:
         click.echo('No device found.')
 
 
-@app.command(name='reboot', short_help='Reboot a device.')
+@app.command(
+    name='reboot',
+    short_help='Reboot a device.'
+)
 @click.pass_context
 def do_reboot(ctx: click.Context) -> None:
     opts = ctx.find_object(GlobalOptions)
@@ -125,10 +160,28 @@ def do_reboot(ctx: click.Context) -> None:
         lun.reboot()
 
 
-@app.command(name='read', short_help='Read raw data from a device.')
-@click.option('-o', '--output', type=click.File('wb'), required=True, help='Output file')
-@click.option('-s', '--start-address', type=_anybase, default=0, help='Start address.')
-@click.option('-n', '--num-bytes', type=_anybase, default=None, help='Number of bytes to read.')
+@app.command(
+    name='read',
+    short_help='Read raw data from a device.'
+)
+@click.option(
+    '-o', '--output',
+    type=click.File('wb'),
+    required=True,
+    help='Output file'
+)
+@click.option(
+    '-s', '--start-address',
+    type=_anybase,
+    default=0,
+    help='Start address.'
+)
+@click.option(
+    '-n', '--num-bytes',
+    type=_anybase,
+    default=None,
+    help='Number of bytes to read.'
+)
 @click.pass_context
 def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_bytes: int | None) -> None:
     opts = ctx.find_object(GlobalOptions)
@@ -141,7 +194,8 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
     with dfu.get_dfu_lun() as lun:
         leftover = max(0, lun.capacity.size_bytes - start_address)
         limit = min(num_bytes, leftover) if num_bytes is not None else leftover
-        click.echo(f'Reading {limit} bytes from device...')
+
+        click.echo(f'Reading {limit} bytes ({_unit(limit)}) from device...')
         with lun.get_buffered_reader() as rd:
             if rd.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
@@ -150,10 +204,28 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
         click.echo('Done.')
 
 
-@app.command(name='write', short_help='Write raw data from a file to the device.')
-@click.option('-i', '--input', 'input_', type=click.File('rb'), required=True, help='Input file')
-@click.option('-s', '--start-address', type=_anybase, default=0, help='Start address.')
-@click.option('-n', '--num-bytes', type=_anybase, default=None, help='Number of bytes to write.')
+@app.command(
+    name='write',
+    short_help='Write raw data from a file to the device.',
+)
+@click.option(
+    '-i', '--input', 'input_',
+    type=click.File('rb'),
+    required=True,
+    help='Input file'
+)
+@click.option(
+    '-s', '--start-address',
+    type=_anybase,
+    default=0,
+    help='Start address.'
+)
+@click.option(
+    '-n', '--num-bytes',
+    type=_anybase,
+    default=None,
+    help='Number of bytes to write.'
+)
 @click.pass_context
 def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num_bytes: int | None) -> None:
     opts = ctx.find_object(GlobalOptions)
@@ -170,8 +242,9 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
 
         if num_bytes is not None and input_size < num_bytes:
             click.echo(
-                f'WARNING: File size ({input_size}) is less than requested ' +
-                f'write size ({num_bytes}). Truncate at file size.'
+                f'WARNING: File size ({input_size} bytes) is less than ' +
+                f'requested  write size ({num_bytes} bytes). Truncate at file ' +
+                'size.'
             )
             num_bytes = input_size
 
@@ -197,20 +270,16 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
         input_.seek(0)
 
         if not opts.yes and not click.confirm(
-            f'This will write {hex(limit)} bytes to base address' +
-            '{hex(start_address)}. Do you wish to proceed?'
+            f'This will write {limit} bytes ({_unit(limit)}) to base ' +
+            f'address {hex(start_address)}. Do you wish to proceed?'
         ):
             click.echo('Operation canceled.')
             sys.exit(1)
 
+        click.echo(f'Writing {limit} bytes ({_unit(limit)}) to device...')
         with lun.get_buffered_writer() as wr:
             if wr.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
-            input_size = input_.seek(0, SEEK_END)
-            input_.seek(0)
-            copyfileobjex_progress(
-                input_,
-                wr,
-                limit
-            )
+            copyfileobjex_progress(input_, wr, limit)
+        click.echo('Done.')
