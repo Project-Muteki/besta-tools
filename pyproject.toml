@@ -15,15 +15,13 @@ construct-typing = "^0.6.2"
 marshmallow-dataclass = "^8.7.0"
 pyyaml = "^6.0.1"
 pyusb = "^1.2.1"
-libusb-package = { version = "^1.0.26.3", optional = true }
+libusb-package = { version = "^1.0.26.4", optional = true }
 filetype = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 ipython = "^8.26.0"
 types-pyyaml = "^6.0.12.20240311"
 pyusb-stubs = {git = "https://github.com/Project-Muteki/pyusb-stubs.git"}
-rope = "^0.20.1"
-pylint = "^2.11.1"
 mypy = "^1.17.1"
 filetype-stubs = {git = "https://github.com/Project-Muteki/filetype-stubs.git"}
 

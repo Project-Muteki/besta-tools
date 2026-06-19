@@ -6,7 +6,7 @@ from io import SEEK_END, BufferedReader, BufferedWriter
 from pathlib import Path
 import sys
 import traceback
-from typing import TYPE_CHECKING, Never, Self, cast, override
+from typing import TYPE_CHECKING, Self, cast, override
 import weakref
 
 import click
@@ -45,7 +45,7 @@ class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingType
     _total: int
     _current: int
     _pc: int
-    _pb: ProgressBar[Never]
+    _pb: ProgressBar[int]
 
     def __init__(self, lun: Lun, total_bytes: int) -> None:
         self._lun = weakref.proxy(lun)

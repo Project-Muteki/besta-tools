@@ -4,7 +4,7 @@ from collections.abc import Generator, Sequence
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import usb.core
 from usb.backend import libusb1
@@ -16,9 +16,11 @@ libusb_backend: _LibUSB
 
 
 def _resolve_backend() ->_LibUSB:
+    libusb_backend: _LibUSB | None
+
     try:
         import libusb_package  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
-        libusb_backend = cast(_LibUSB, libusb_package.get_libusb1_backend())
+        libusb_backend = cast(Any, libusb_package.get_libusb1_backend())
     except ImportError:
         libusb_backend = None
 
