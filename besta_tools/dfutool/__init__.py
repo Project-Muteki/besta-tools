@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from io import SEEK_END, BufferedReader, BufferedWriter
 from pathlib import Path
 import sys
 import traceback
-from typing import TYPE_CHECKING, Never
+from typing import TYPE_CHECKING, Never, Self, cast, override
 import weakref
 
 import click
@@ -18,6 +19,7 @@ from besta_tools.dfutool.device import enumerate_device, generate_udev_file
 from besta_tools.dfutool.dfu import DfuDevice, Lun
 
 if TYPE_CHECKING:
+    from types import TracebackType
     from _typeshed import MaybeNone
 
 
@@ -83,7 +85,7 @@ def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
         return None
 
 
-class CopyProgress:
+class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument], we're using it as an ABC
     _lun: Lun
     _total: int
     _current: int
@@ -96,6 +98,16 @@ class CopyProgress:
         self._current = 0
         self._pc = 0
         self._pb = progressbar(length=total_bytes)
+
+    @override
+    def __enter__(self) -> Self:
+        self._pb = self._pb.__enter__()
+        return cast(Self, super().__enter__())
+
+    @override
+    def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
+        self._pb.__exit__(exc_type, exc_value, traceback)
+        return None
 
     def update(self, inc: int) -> None:
         self._pb.update(inc)
@@ -231,7 +243,7 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
 
         click.echo(f'Reading {limit} bytes ({_unit(limit)}) from device...')
         progress = CopyProgress(lun, limit)
-        with lun.get_buffered_reader() as rd:
+        with lun.get_buffered_reader() as rd, progress:
             if rd.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
@@ -318,7 +330,7 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
 
         click.echo(f'Writing {limit} bytes ({_unit(limit)}) to device...')
         progress = CopyProgress(lun, limit)
-        with lun.get_buffered_writer() as wr:
+        with lun.get_buffered_writer() as wr, progress:
             if wr.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
