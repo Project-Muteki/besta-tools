@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Sequence
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
@@ -47,6 +47,7 @@ class DfuType:
     pid: int
     manufacturer: str
     product: str
+    supported: bool = field(default=True)
 
     def emit_udev_rule(self):
         return (
@@ -99,6 +100,7 @@ KNOWN_DEVICE_TYPES: Sequence[DfuType] = (
         pid=0x5720,
         manufacturer='nuvoTon',
         product='USB MSC',
+        supported=False,
     ),
 )
 
@@ -139,7 +141,9 @@ def enumerate_device() -> Generator[tuple[DfuType, usb.core.Device]]:
                 trim_nul_terminated(dev.product)
             )
             if device_type_key in KNOWN_DEVICE_INDEX:
-                yield KNOWN_DEVICE_INDEX[device_type_key], dev
+                devtype = KNOWN_DEVICE_INDEX[device_type_key]
+                if devtype.supported:
+                    yield devtype, dev
         except ValueError:
             # No langid and probably no access to device. Skipping,
             continue
