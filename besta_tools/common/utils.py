@@ -1,5 +1,5 @@
 from click._termui_impl import ProgressBar
-from typing import AnyStr, TYPE_CHECKING
+from typing import AnyStr, TYPE_CHECKING, Callable
 from dataclasses import dataclass
 from itertools import islice
 from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
@@ -165,17 +165,17 @@ def copyfileobjex_progress(
     fdst: 'SupportsWrite[AnyStr]',
     limit: int,
     length: int = COPY_BUFSIZE,
+    progress_callback: Callable[[int], None] | None = None
 ) -> None:
     w = fdst.write
     r = fsrc.read
 
-    pb: ProgressBar[Never] = click.progressbar(length=limit)
-    with pb:
-        while limit > 0:
-            bytes_to_read = min(length, limit)
-            w(r(bytes_to_read))
-            limit -= bytes_to_read
-            pb.update(bytes_to_read)
+    while limit > 0:
+        bytes_to_read = min(length, limit)
+        w(r(bytes_to_read))
+        limit -= bytes_to_read
+        if progress_callback is not None:
+            progress_callback(bytes_to_read)
 
 
 def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:

@@ -7,7 +7,6 @@ from array import array
 from contextlib import AbstractContextManager
 from errno import EIO
 import time
-import traceback
 from typing import TYPE_CHECKING, Final, Self, cast, override
 from io import SEEK_CUR, SEEK_END, SEEK_SET, BufferedRandom, BufferedReader, BufferedWriter, RawIOBase
 from os import strerror

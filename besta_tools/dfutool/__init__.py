@@ -5,14 +5,17 @@ from io import SEEK_END, BufferedReader, BufferedWriter
 from pathlib import Path
 import sys
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Never
+import weakref
 
 import click
+from click._termui_impl import ProgressBar
+from click.termui import progressbar
 from usb.core import Device
 
 from besta_tools.common.utils import copyfileobjex_progress
 from besta_tools.dfutool.device import enumerate_device, generate_udev_file
-from besta_tools.dfutool.dfu import DfuDevice
+from besta_tools.dfutool.dfu import DfuDevice, Lun
 
 if TYPE_CHECKING:
     from _typeshed import MaybeNone
@@ -44,8 +47,10 @@ def _format_usb_addr(dev: Device) -> str:
     return f'Bus {dev.bus:03d} Address {dev.address:03d}'
 
 
-def _anybase(s: str) -> int:
-    return int(s, 0)
+def _anybase(s: int | str | None) -> int | None:
+    if isinstance(s, int):
+        return s
+    return int(s, 0) if s is not None else None
 
 
 class UsbAddress:
@@ -76,6 +81,29 @@ def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
                 click.echo(f'Using first device of type {kind.name} at {_format_usb_addr(dev)}.')
                 return DfuDevice(dev)
         return None
+
+
+class CopyProgress:
+    _lun: Lun
+    _total: int
+    _current: int
+    _pc: int
+    _pb: ProgressBar[Never]
+
+    def __init__(self, lun: Lun, total_bytes: int) -> None:
+        self._lun = weakref.proxy(lun)
+        self._total = total_bytes
+        self._current = 0
+        self._pc = 0
+        self._pb = progressbar(length=total_bytes)
+
+    def update(self, inc: int) -> None:
+        self._pb.update(inc)
+        self._current += inc
+        new_pc = int(round(self._current * 100 / self._total))
+        if new_pc > self._pc:
+            self._lun.set_progress(new_pc)
+            self._pc = new_pc
 
 
 @click.group(
@@ -196,12 +224,18 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
         leftover = max(0, lun.capacity.size_bytes - start_address)
         limit = min(num_bytes, leftover) if num_bytes is not None else leftover
 
+        if not lun.ping():
+            click.echo('ERROR: Device did not respond to DFU ping.')
+            sys.exit(1)
+        lun.set_progress(0)
+
         click.echo(f'Reading {limit} bytes ({_unit(limit)}) from device...')
+        progress = CopyProgress(lun, limit)
         with lun.get_buffered_reader() as rd:
             if rd.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
-            copyfileobjex_progress(rd, output, limit)
+            copyfileobjex_progress(rd, output, limit, progress_callback=progress.update)
         click.echo('Done.')
 
 
@@ -277,12 +311,18 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
             click.echo('Operation canceled.')
             sys.exit(1)
 
+        if not lun.ping():
+            click.echo('ERROR: Device did not respond to DFU ping.')
+            sys.exit(1)
+        lun.set_progress(0)
+
         click.echo(f'Writing {limit} bytes ({_unit(limit)}) to device...')
+        progress = CopyProgress(lun, limit)
         with lun.get_buffered_writer() as wr:
             if wr.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
-            copyfileobjex_progress(input_, wr, limit)
+            copyfileobjex_progress(input_, wr, limit, progress_callback=progress.update)
         click.echo('Done.')
 
 @app.command(
