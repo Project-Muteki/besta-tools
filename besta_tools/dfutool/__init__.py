@@ -31,30 +31,6 @@ class GlobalOptions:
     yes: bool | MaybeNone = field(default=None)
 
 
-def _unit(val: int) -> str:
-    if val < 1000:
-        return f'{val} B'
-
-    tmp: float = float(val) / 1024
-    for unit in ('KiB', 'MiB', 'GiB'):
-        if tmp >= 1000:
-            tmp = tmp / 1024
-        else:
-            return f'{tmp:.2f} {unit}'
-
-    return f'{tmp:.2f} TiB'
-
-
-def _format_usb_addr(dev: Device) -> str:
-    return f'Bus {dev.bus:03d} Address {dev.address:03d}'
-
-
-def _anybase(s: int | str | None) -> int | None:
-    if isinstance(s, int):
-        return s
-    return int(s, 0) if s is not None else None
-
-
 class UsbAddress:
     bus: int
     address: int
@@ -62,27 +38,6 @@ class UsbAddress:
     def __init__(self, s: str) -> None:
         b_str, a_str = s.split(':')
         self.bus, self.address = int(b_str, 10), int(a_str, 10)
-
-
-def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
-    if opts.usb_address is not None:
-        for kind, dev in enumerate_device():
-            if dev.address == opts.usb_address.address and dev.bus == opts.usb_address.bus:
-                click.echo(f'Using device at {_format_usb_addr(dev)}, type {kind.name}.')
-                return DfuDevice(dev)
-        return None
-    elif opts.device_type is None:
-        for idx, (kind, dev) in enumerate(enumerate_device()):
-            if idx == opts.device_index:
-                click.echo(f'Using device #{idx} at {_format_usb_addr(dev)}, type {kind.name}.')
-                return DfuDevice(dev)
-        return None
-    else:
-        for kind, dev in enumerate_device():
-            if kind.name == opts.device_type:
-                click.echo(f'Using first device of type {kind.name} at {_format_usb_addr(dev)}.')
-                return DfuDevice(dev)
-        return None
 
 
 class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument], we're using it as an ABC
@@ -116,6 +71,51 @@ class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingType
         if new_pc > self._pc:
             self._lun.set_progress(new_pc)
             self._pc = new_pc
+
+
+def _unit(val: int) -> str:
+    if val < 1000:
+        return f'{val} B'
+
+    tmp: float = float(val) / 1024
+    for unit in ('KiB', 'MiB', 'GiB'):
+        if tmp >= 1000:
+            tmp = tmp / 1024
+        else:
+            return f'{tmp:.2f} {unit}'
+
+    return f'{tmp:.2f} TiB'
+
+
+def _format_usb_addr(dev: Device) -> str:
+    return f'Bus {dev.bus:03d} Address {dev.address:03d}'
+
+
+def _anybase(s: int | str | None) -> int | None:
+    if isinstance(s, int):
+        return s
+    return int(s, 0) if s is not None else None
+
+
+def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
+    if opts.usb_address is not None:
+        for kind, dev in enumerate_device():
+            if dev.address == opts.usb_address.address and dev.bus == opts.usb_address.bus:
+                click.echo(f'Using device at {_format_usb_addr(dev)}, type {kind.name}.')
+                return DfuDevice(dev)
+        return None
+    elif opts.device_type is None:
+        for idx, (kind, dev) in enumerate(enumerate_device()):
+            if idx == opts.device_index:
+                click.echo(f'Using device #{idx} at {_format_usb_addr(dev)}, type {kind.name}.')
+                return DfuDevice(dev)
+        return None
+    else:
+        for kind, dev in enumerate_device():
+            if kind.name == opts.device_type:
+                click.echo(f'Using first device of type {kind.name} at {_format_usb_addr(dev)}.')
+                return DfuDevice(dev)
+        return None
 
 
 @click.group(

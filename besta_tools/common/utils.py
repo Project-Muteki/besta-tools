@@ -156,7 +156,10 @@ def copyfileobjex(
 
     while limit > 0:
         bytes_to_read = min(length, limit)
-        w(r(bytes_to_read))
+        data = r(bytes_to_read)
+        if len(data) == 0:
+            break
+        w(data)
         limit -= bytes_to_read
 
 
@@ -172,7 +175,10 @@ def copyfileobjex_progress(
 
     while limit > 0:
         bytes_to_read = min(length, limit)
-        w(r(bytes_to_read))
+        data = r(bytes_to_read)
+        if len(data) == 0:
+            break
+        w(data)
         limit -= bytes_to_read
         if progress_callback is not None:
             progress_callback(bytes_to_read)
