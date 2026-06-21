@@ -20,6 +20,7 @@ from construct import (
     IfThenElse,
     Int32ul,
     Int64ul,
+    Padded,
     PaddedString,
     Padding,
     Rebuild,
@@ -90,7 +91,8 @@ def probe_image(f: BufferedReader, search_limit: int = 0x100000, step_size: int 
     # seq2 (os version string) can also be empty for data header format version 2
     if is_strictly_nul_terminated(seq1) and (is_strictly_nul_terminated(seq2) or not any(seq2)):
         header_format_version = 2
-    elif is_strictly_nul_terminated(seq1[:14]) and not is_strictly_nul_terminated(seq2):
+    # seq2 will contain the first 2 checksum values so very likely they won't be NUL and will fail the test.
+    elif is_strictly_nul_terminated(seq1[:12]) and not is_strictly_nul_terminated(seq2):
         header_format_version = 1
     for offset in range(0, search_limit, step_size):
         f.seek(offset)
@@ -119,10 +121,13 @@ class ImageMetadataV1(DataclassMixin):
     content_size: int = csfield(Int32ul)
     data_size: int = csfield(Int32ul)
     checksum_block_size: int = csfield(Int32ul)
-    checksums: list[ChecksumValue] = csfield(IfThenElse(
-        this.checksum_block_size != 0,
-        Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
-        Array(0, CsChecksumValue),
+    checksums: list[ChecksumValue] = csfield(Padded(
+        0xd8,
+        IfThenElse(
+            this.checksum_block_size != 0,
+            Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
+            Array(0, CsChecksumValue),
+        )
     ))
 
 
@@ -195,9 +200,13 @@ class ImageIndexV1(DataclassMixin):
     # therefore it's required to include a
     # ImageIndexEntryV1(0xffffffff, 0xffffffff) at the end of the list.
     entries: list[ImageIndexEntryV1] = csfield(
-        RepeatUntil(
-            lambda obj, lst, ctx: obj.is_sentinel(),
-            CsImageIndexEntryV1
+        Padded(
+            0x3f0,
+            RepeatUntil(
+                lambda obj, lst, ctx: obj.is_sentinel(),
+                CsImageIndexEntryV1
+            ),
+            b'\xff',
         )
     )
 
