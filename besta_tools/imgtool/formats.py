@@ -23,6 +23,7 @@ from construct import (
     PaddedString,
     Padding,
     Rebuild,
+    RepeatUntil,
     this,
     len_
 )
@@ -112,6 +113,23 @@ def probe_image(f: BufferedReader, search_limit: int = 0x100000, step_size: int 
 
 
 @dataclass
+class ImageMetadataV1(DataclassMixin):
+    image_name: str = csfield(PaddedString(16, 'ascii'))
+    image_version: str = csfield(PaddedString(12, 'ascii'))
+    content_size: int = csfield(Int32ul)
+    data_size: int = csfield(Int32ul)
+    checksum_block_size: int = csfield(Int32ul)
+    checksums: list[ChecksumValue] = csfield(IfThenElse(
+        this.checksum_block_size != 0,
+        Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
+        Array(0, CsChecksumValue),
+    ))
+
+
+CsImageMetadataV1 = DataclassStruct(ImageMetadataV1)
+
+
+@dataclass
 class ImageMetadataV2(DataclassMixin):
     image_name: str = csfield(PaddedString(16, 'ascii'))
     image_version: str = csfield(PaddedString(16, 'ascii'))
@@ -133,7 +151,30 @@ CsImageMetadataV2 = DataclassStruct(ImageMetadataV2)
 
 # There's a bug in construct 2.9+ that prevented dynamic sizeof() being calculated.
 # Hardcode this for now.
+IMAGE_METADATA_V1_SIZEOF = 0x28
 IMAGE_METADATA_V2_SIZEOF = 0x60
+
+
+@dataclass
+class ImageIndexEntryV1(DataclassMixin):
+    offset: int = csfield(Int32ul)
+    size: int = csfield(Int32ul)
+
+    @classmethod
+    def sentinel(cls) -> Self:
+        '''
+        Build a sentinel value i.e. ImageIndexEntryV1((0xffffffff, 0xffffffff).
+        '''
+        return cls(0xffffffff, 0xffffffff)
+
+    def is_sentinel(self) -> bool:
+        '''
+        Return True if the entry is a sentinel value.
+        '''
+        return self.offset == 0xffffffff and self.size == 0xffffffff
+
+
+CsImageIndexEntryV1 = DataclassStruct(ImageIndexEntryV1)
 
 
 @dataclass
@@ -144,6 +185,24 @@ class ImageIndexEntryV2(DataclassMixin):
 
 
 CsImageIndexEntryV2 = DataclassStruct(ImageIndexEntryV2)
+
+
+@dataclass
+class ImageIndexV1(DataclassMixin):
+    image_type: int = csfield(Int32ul)
+    _reserved: bytes = csfield(Const(b'\xff' * 12))
+    # This will keep the sentinel value at both the build time and parse time,
+    # therefore it's required to include a
+    # ImageIndexEntryV1(0xffffffff, 0xffffffff) at the end of the list.
+    entries: list[ImageIndexEntryV1] = csfield(
+        RepeatUntil(
+            lambda obj, lst, ctx: obj.is_sentinel(),
+            CsImageIndexEntryV1
+        )
+    )
+
+
+CsImageIndexV1 = DataclassStruct(ImageIndexV1)
 
 
 IMAGE_INDEX_V2_VERSIONS: set[int] = {
@@ -322,8 +381,10 @@ class ImageFileV2:
 
         assert manifest.header_format_version == 2, 'Header format version must be 2.'
 
+        nchecksums = div_round_up(manifest.data_size, manifest.checksum_block_size)
+
         header_align = manifest.block_size if manifest.header_size is None else manifest.header_size
-        header_size_actual = align(IMAGE_METADATA_V2_SIZEOF, manifest.block_size) + IMAGE_INDEX_V2_SIZEOF + CsImageIndexEntryV2.sizeof() * len(manifest.sections)
+        header_size_actual = align(IMAGE_METADATA_V2_SIZEOF + CsChecksumValue.sizeof() * nchecksums, manifest.block_size) + IMAGE_INDEX_V2_SIZEOF + CsImageIndexEntryV2.sizeof() * len(manifest.sections)
         header_size_padded = align(header_size_actual, header_align)
         if manifest.header_size is not None and manifest.header_size < header_size_actual:
             raise RuntimeError(f'Header allocation over limit (max allowed: 0x{manifest.header_size:x}, actual size: 0x{header_size_actual:x}). Refusing to process further.')
@@ -338,7 +399,7 @@ class ImageFileV2:
             frag_entries.append(frag_section)
             index_entries.append(ImageIndexEntryV2(offset=frag_section.offset, size=real_size))
 
-        dummy_checksums = [ChecksumValue(checksum=0) for _ in range(div_round_up(manifest.data_size, manifest.checksum_block_size))]
+        dummy_checksums = [ChecksumValue(checksum=0) for _ in range(nchecksums)]
         metadata = ImageMetadataV2(
             image_name=manifest.name,
             image_version=manifest.version_string,
