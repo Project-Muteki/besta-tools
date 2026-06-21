@@ -14,7 +14,7 @@ from click._termui_impl import ProgressBar
 from click.termui import progressbar
 from usb.core import Device
 
-from besta_tools.common.utils import copyfileobjex_progress
+from besta_tools.common.utils import anybase, bytes_unit, copyfileobjex_progress
 from besta_tools.dfutool.device import enumerate_device, generate_udev_file
 from besta_tools.dfutool.dfu import DfuDevice, Lun
 
@@ -73,28 +73,8 @@ class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingType
             self._pc = new_pc
 
 
-def _unit(val: int) -> str:
-    if val < 1000:
-        return f'{val} B'
-
-    tmp: float = float(val) / 1024
-    for unit in ('KiB', 'MiB', 'GiB'):
-        if tmp >= 1000:
-            tmp = tmp / 1024
-        else:
-            return f'{tmp:.2f} {unit}'
-
-    return f'{tmp:.2f} TiB'
-
-
 def _format_usb_addr(dev: Device) -> str:
     return f'Bus {dev.bus:03d} Address {dev.address:03d}'
-
-
-def _anybase(s: int | str | None) -> int | None:
-    if isinstance(s, int):
-        return s
-    return int(s, 0) if s is not None else None
 
 
 def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
@@ -179,7 +159,7 @@ def do_list() -> None:
             click.echo(traceback.format_exc())
             continue
 
-        click.echo(f'Index #{idx}: {_format_usb_addr(dev)}: {kind.description} ({kind.name}) - {_unit(size)}')
+        click.echo(f'Index #{idx}: {_format_usb_addr(dev)}: {kind.description} ({kind.name}) - {bytes_unit(size)}')
 
     if not found_at_least_one:
         click.echo('No device found.')
@@ -213,13 +193,13 @@ def do_reboot(ctx: click.Context) -> None:
 )
 @click.option(
     '-s', '--start-address',
-    type=_anybase,
+    type=anybase,
     default=0,
     help='Start address.'
 )
 @click.option(
     '-n', '--num-bytes',
-    type=_anybase,
+    type=anybase,
     default=None,
     help='Number of bytes to read.'
 )
@@ -241,7 +221,7 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
             sys.exit(1)
         lun.set_progress(0)
 
-        click.echo(f'Reading {limit} bytes ({_unit(limit)}) from device...')
+        click.echo(f'Reading {limit} bytes ({bytes_unit(limit)}) from device...')
         progress = CopyProgress(lun, limit)
         with lun.get_buffered_reader() as rd, progress:
             if rd.seek(start_address) != start_address:
@@ -263,13 +243,13 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
 )
 @click.option(
     '-s', '--start-address',
-    type=_anybase,
+    type=anybase,
     default=0,
     help='Start address.'
 )
 @click.option(
     '-n', '--num-bytes',
-    type=_anybase,
+    type=anybase,
     default=None,
     help='Number of bytes to write.'
 )
@@ -317,7 +297,7 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
         input_.seek(0)
 
         if not opts.yes and not click.confirm(
-            f'This will write {limit} bytes ({_unit(limit)}) to base ' +
+            f'This will write {limit} bytes ({bytes_unit(limit)}) to base ' +
             f'address {hex(start_address)}. Do you wish to proceed?'
         ):
             click.echo('Operation canceled.')
@@ -328,7 +308,7 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
             sys.exit(1)
         lun.set_progress(0)
 
-        click.echo(f'Writing {limit} bytes ({_unit(limit)}) to device...')
+        click.echo(f'Writing {limit} bytes ({bytes_unit(limit)}) to device...')
         progress = CopyProgress(lun, limit)
         with lun.get_buffered_writer() as wr, progress:
             if wr.seek(start_address) != start_address:

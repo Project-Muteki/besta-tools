@@ -1,13 +1,9 @@
-from click._termui_impl import ProgressBar
 from typing import AnyStr, TYPE_CHECKING, Callable
 from dataclasses import dataclass
 from itertools import islice
 from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
 import shutil
 import os
-
-import click
-from typing_extensions import Never
 
 if TYPE_CHECKING:
     from _typeshed import SupportsRead, SupportsWrite
@@ -212,3 +208,26 @@ def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: 
 
 def div_round_up(a: float, b: float) -> int:
     return int(-(-a // b))
+
+
+def anybase(s: int | str | None) -> int | None:
+    '''
+    Parse strings containing int of any base (0x, 0o, 0b) into an int.
+    '''
+    if isinstance(s, int):
+        return s
+    return int(s, 0) if s is not None else None
+
+
+def bytes_unit(val: int) -> str:
+    if val < 1000:
+        return f'{val} B'
+
+    tmp: float = float(val) / 1024
+    for unit in ('KiB', 'MiB', 'GiB'):
+        if tmp >= 1000:
+            tmp = tmp / 1024
+        else:
+            return f'{tmp:.2f} {unit}'
+
+    return f'{tmp:.2f} TiB'
