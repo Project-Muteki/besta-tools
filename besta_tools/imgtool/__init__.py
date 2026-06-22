@@ -1,15 +1,21 @@
+from __future__ import annotations
+
 from pathlib import Path
 import sys
 
 import click
 
 from .formats import (
-    ImageFileV2,
-    probe_image,
+    ImageIndexEntryV1,
+    ImageIndexV1,
+    ImageMetadataV2,
+    ProbeError,
+    construct_from_image_file,
+    construct_from_manifest,
 )
 
 
-@click.group()
+@click.group(help='Tool for packing/unpacking Besta partition image files.')
 def app():
     pass
 
@@ -21,23 +27,20 @@ def app():
 )
 @click.argument(
     'image',
-    type=click.Path(file_okay=True, readable=True),
+    type=click.Path(file_okay=True, readable=True, path_type=Path),
 )
-def do_verify(image: str):
-    # TODO: replace this with a proper dispatcher class
-    with open(image, 'rb') as f:
-        probe = probe_image(f)
-    if probe.header_format_version != 2:
-        raise NotImplementedError('V1 image type handling is currently not implemented.')
-    if probe.index_type != 2:
-        raise RuntimeError(f'Unexpected index type {probe.index_type}.')
+def do_verify(image: Path):
+    try:
+        image_obj = construct_from_image_file(image)
+    except ProbeError as e:
+        click.echo(str(e))
+        sys.exit(1)
 
-    file = ImageFileV2.load(image)
-    status = file.verify()
+    status = image_obj.verify()
     if all(status):
-        click.echo(f'Image file {file.path} has been successfully verified.')
+        click.echo(f'Image file {image_obj.path} has been successfully verified.')
     else:
-        click.echo(f'Image file {file.path} CANNOT be verified.')
+        click.echo(f'Image file {image_obj.path} CANNOT be verified.')
         click.echo(f'Block status: {' '.join('OK' if s else 'NG' for s in status)}')
         sys.exit(1)
 
@@ -49,18 +52,18 @@ def do_verify(image: str):
 )
 @click.argument(
     'manifest',
-    type=click.Path(dir_okay=True, readable=True),
+    type=click.Path(dir_okay=True, readable=True, path_type=Path),
 )
 @click.option(
     '-o', '--output',
-    type=click.Path(file_okay=True, writable=True),
+    type=click.Path(file_okay=True, writable=True, path_type=Path),
     help=(
         'Path to the output file. If not specified, only validate the ' +
         'input MANIFEST and do not build anything.'
     )
 )
-def do_build(manifest: str, output: str | None):
-    image_obj = ImageFileV2.from_manifest(manifest)
+def do_build(manifest: Path, output: Path | None):
+    image_obj = construct_from_manifest(manifest)
     if output is not None:
         image_obj.build(output)
     else:
@@ -85,12 +88,17 @@ def do_build(manifest: str, output: str | None):
     ),
 )
 def do_extract(image: Path, output_dir: Path | None):
-    image_obj = ImageFileV2.load(image)
-    click.echo(f'Image loaded. Found {len(image_obj.index.entries)} objects.')
+    try:
+        image_obj = construct_from_image_file(image)
+    except ProbeError as e:
+        click.echo(str(e))
+        sys.exit(1)
+
+    click.echo(f'Image loaded. Found {image_obj.index.count_entries()} objects.')
     if output_dir is None:
         output_dir = image.parent / image.stem
     image_obj.extract(output_dir)
-    click.echo(f'Extracted {len(image_obj.index.entries)} objects under {output_dir}.')
+    click.echo(f'Extracted {image_obj.index.count_entries()} objects under {output_dir}.')
 
 
 @app.command(
@@ -103,8 +111,12 @@ def do_extract(image: Path, output_dir: Path | None):
     type=click.Path(file_okay=True, readable=True, path_type=Path),
 )
 def do_info(image: Path):
-    image_obj = ImageFileV2.load(image)
-    assert image_obj.manifest is not None
+    try:
+        image_obj = construct_from_image_file(image)
+    except ProbeError as e:
+        click.echo(str(e))
+        sys.exit(1)
+
     manifest = image_obj.manifest
     metadata = image_obj.metadata
     index = image_obj.index
@@ -113,14 +125,19 @@ def do_info(image: Path):
     if manifest.header_format_version == 2:
         click.echo(f'V2 Index Format Version: 0x{manifest.index_format_version:08x}')
     click.echo(f'Image Name: {metadata.image_name}')
-    click.echo(f'Type: {manifest.type} (0x{metadata.image_type_key:08x})')
+    if isinstance(metadata, ImageMetadataV2):
+        click.echo(f'Type: {manifest.type} (0x{metadata.image_type_key:08x})')
+    elif isinstance(index, ImageIndexV1):
+        click.echo(f'Type: {manifest.type} (0x{index.image_type:08x})')
     click.echo(f'Version: {metadata.image_version}')
     click.echo(f'Content Size: 0x{metadata.content_size:x}')
     click.echo(f'Data Size: 0x{metadata.data_size:x}')
     click.echo(f'Block Size: 0x{manifest.block_size:x}')
     click.echo(f'Checksum Block Size: 0x{metadata.checksum_block_size:x}')
-    click.echo(f'Object Count: {len(index.entries)}')
+    click.echo(f'Object Count: {index.count_entries()}')
     click.echo()
     click.echo('Objects:')
     for entry in index.entries:
+        if isinstance(entry, ImageIndexEntryV1) and entry.is_sentinel():
+            break
         click.echo(f'  - Offset 0x{entry.offset:x} Size 0x{entry.size:x}')
