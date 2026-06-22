@@ -3,7 +3,7 @@ from itertools import zip_longest
 import re
 from typing import Annotated, Any, Protocol, Self, cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from _typeshed import SupportsWrite
+    from _typeshed import MaybeNone, SupportsWrite
 
 import math
 import shutil
@@ -31,7 +31,6 @@ from construct import (
 from construct_typed import DataclassMixin, DataclassStruct, csfield
 from marshmallow import ValidationError
 from marshmallow import fields as mm_fields
-from marshmallow_dataclass import dataclass as mm_dataclass
 from marshmallow_dataclass import class_schema as mm_class_schema
 
 from filetype import guess_extension
@@ -121,14 +120,16 @@ class ImageMetadataV1(DataclassMixin):
     content_size: int = csfield(Int32ul)
     data_size: int = csfield(Int32ul)
     checksum_block_size: int = csfield(Int32ul)
-    checksums: list[ChecksumValue] = csfield(Padded(
-        0xd8,
-        IfThenElse(
-            this.checksum_block_size != 0,
-            Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
-            Array(0, CsChecksumValue),
+    checksums: list[ChecksumValue] = csfield(
+        Padded(
+            0xd8,
+            IfThenElse(
+                this.checksum_block_size != 0,
+                Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
+                Array(0, CsChecksumValue),
+            )
         )
-    ))
+    )
 
 
 CsImageMetadataV1 = DataclassStruct(ImageMetadataV1)
@@ -239,7 +240,7 @@ class ImageIndexV2(DataclassMixin):
 CsImageIndexV2 = DataclassStruct(ImageIndexV2)
 
 
-@mm_dataclass
+@dataclass
 class ImageManifestSection:
     path: str
     align: int = field(default=1, metadata={'required': False})
@@ -250,7 +251,7 @@ def type_validator(val: str) -> None:
         raise ValidationError(f'Invalid type value {repr(val)}')
 
 
-@mm_dataclass
+@dataclass
 class ImageManifest:
     header_format_version: int
     index_format_version: int
@@ -280,6 +281,227 @@ MmImageManifest = mm_class_schema(ImageManifest)
 
 
 @dataclass
+class ImageFileV1:
+    path: Path
+    'Path to the image file if the image file exists, or the path to the manifest file if the image file is yet to be built.'
+    is_file: bool
+    'True if object is backed by a real image file, False if object is backed by separate files listed in the manifest.'
+    metadata: ImageMetadataV1
+    index: ImageIndexV1
+    # manifest is typed as None because we have a custom default value factory
+    # that depends on the rest of the object states in case it is not passed
+    # on initialization. In practice this value will never be None.
+    manifest: ImageManifest | MaybeNone = field(default=None)
+
+    def __post_init__(self) -> None:
+        if self.manifest is None:
+            self._build_manifest()
+    
+    def _build_manifest(self) -> None:
+        def _gen_section_name(entries: list[ImageIndexEntryV1]):
+            for i, entry in enumerate(entries):
+                if entry.is_sentinel():
+                    break
+                probe_size = min(entry.size, MAGIC_PROBE_SIZE)
+                with self.path.open('rb') as f:
+                    f.seek(entry.offset)
+                    probe_data = f.read(probe_size)
+                    probe_result: str = guess_extension(probe_data) or 'bin'
+                yield f'sections/{i:08x}.{probe_result}'
+
+        # Alignment value by definition must be integer multiples of every data offset value.
+        # If there's only one data entry, disable alignment.
+        if len(self.index.entries) <= 1:
+            align = 1
+        else:
+            align = math.gcd(*(e.offset for e in filter((lambda ee: not ee.is_sentinel() and ee.offset != 0), self.index.entries)))
+            if align == 0:
+                align = 1
+
+        sections: list[ImageManifestSection] = [
+            ImageManifestSection(name, align=align) for name in _gen_section_name(self.index.entries)
+        ]
+
+        self.manifest = ImageManifest(
+            header_format_version=1,
+            index_format_version=1,
+            name=self.metadata.image_name,
+            version_string=self.metadata.image_version,
+            type=IMAGE_TYPE_MAP_R.get(self.index.image_type, f'key:0x{self.index.image_type:x}'),
+            block_size=0x100,
+            checksum_block_size=self.metadata.checksum_block_size,
+            content_size=self.metadata.content_size,
+            data_size=self.metadata.data_size,
+            header_size=0x500,
+            sections=sections,
+        )
+
+    def _emit_data(self, fout: 'BuilderIoObject[bytes]', pad_to_size: int | None = None):
+        assert self.manifest is not None
+
+        metadata = CsImageMetadataV1.build(self.metadata)
+        index = CsImageIndexV1.build(self.index)
+        fout.write(metadata)
+        fout.write(index)
+
+        if not self.is_file:
+            for section, entry in zip(self.manifest.sections, self.index.entries):
+                with open(self.path.parent / section.path, 'rb') as fsec:
+                    assert entry.offset == fout.tell(), ('Attempting to place section at unexpected offset. '
+                                                         'This is likely a bug of the index builder.')
+                    shutil.copyfileobj(fsec, fout)
+                    fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+        else:
+            with self.path.open('rb') as image_file:
+                for section, entry in zip(self.manifest.sections, self.index.entries):
+                    image_file.seek(entry.offset)
+                    copyfileobjex(image_file, fout, limit=entry.size)
+                    fout.write(generate_padding(fout.tell(), section.align, pad_byte=0xff))
+
+        if fout.tell() < self.metadata.content_size:
+            fout.write(generate_padding(fout.tell(), self.metadata.content_size if pad_to_size is None else pad_to_size, pad_byte=0xff))
+
+    @classmethod
+    def load(cls, image_path: str | Path) -> Self:
+        # TODO this method should be abstract
+        image_path = Path(image_path)
+        with image_path.open('rb') as f:
+            metadata = CsImageMetadataV1.parse_stream(f)
+            index = CsImageIndexV1.parse_stream(f)
+
+        return cls(image_path, True, metadata, index)
+
+    @classmethod
+    def from_manifest(cls, manifest_path: str | Path) -> Self:
+        # This is only used for offset calculation and not for actual binary building
+        bb = BinaryBuilder()
+
+        manifest_path = Path(manifest_path)
+        with manifest_path.open('r') as manifest_file:
+            manifest = cast(ImageManifest, MmImageManifest().load(cast(dict[str, Any], yaml.safe_load(manifest_file))))  # pyright: ignore[reportInvalidCast]
+
+        assert manifest.header_format_version == 1, 'Header format version must be 1.'
+
+        nchecksums = div_round_up(manifest.data_size, manifest.checksum_block_size)
+
+        header_size_v1 = CsImageIndexV1.sizeof() + CsImageMetadataV1.sizeof()
+        bb.append(header_size_v1)
+
+        index_entries: list[ImageIndexEntryV1] = []
+        frag_entries: list[Fragment] = []
+        for section in manifest.sections:
+            path = manifest_path.parent / Path(section.path)
+            real_size = path.stat().st_size
+            frag_section = bb.append(align(real_size, section.align))
+            frag_entries.append(frag_section)
+            index_entries.append(ImageIndexEntryV1(offset=frag_section.offset, size=real_size))
+        index_entries.append(ImageIndexEntryV1.sentinel())
+
+        dummy_checksums = [ChecksumValue(checksum=0) for _ in range(nchecksums)]
+        metadata = ImageMetadataV1(
+            image_name=manifest.name,
+            image_version=manifest.version_string,
+            content_size=manifest.content_size,
+            data_size=manifest.data_size,
+            checksum_block_size=manifest.checksum_block_size,
+            checksums=dummy_checksums,
+        )
+
+        index = ImageIndexV1(
+            image_type=IMAGE_TYPE_MAP[manifest.type],
+            entries=index_entries,
+        )
+
+        result = cls(
+            path=manifest_path,
+            is_file=False,
+            metadata=metadata,
+            index=index,
+            manifest=manifest,
+        )
+
+        result.fix_checksum()
+
+        return result
+
+    def fix_checksum(self) -> None:
+        # TODO this method should be generic
+        assert self.manifest is not None, 'BUG: Missing manifest object.'
+
+        checksum_size = div_round_up(self.metadata.data_size, self.metadata.checksum_block_size) * self.metadata.checksum_block_size
+        checksum = Checksum(self.manifest.checksum_block_size)
+
+        self._emit_data(checksum, pad_to_size=checksum_size)
+
+        d = checksum.digest()
+        if len(d) != 0:
+            # Each non-zero checksum value adds up to 0x200 instead of 0
+            fixup = sum(0x200 for c in d if c != 0)
+            d[0] = (d[0] + fixup) & 0xffff
+
+        self.metadata.checksums = [ChecksumValue(c) for c in d]
+
+    def build(self, output: str | Path) -> None:
+        # TODO this method should be generic
+        if self.manifest is None:
+            raise ValueError('Incomplete image file object. Building not supported.')
+
+        output = Path(output)
+
+        with output.open('wb') as fout:
+            self._emit_data(fout)
+
+    def extract(self, output: str | Path) -> None:
+        # TODO this method should be generic
+        if self.manifest is None:
+            raise ValueError('Incomplete image file object. Extraction not supported.')
+
+        output = Path(output)
+        output.mkdir(exist_ok=True)
+        with (output / 'manifest.yaml').open('w') as manifest_file:
+            yaml.safe_dump(MmImageManifest().dump(self.manifest), manifest_file, sort_keys=False)
+        with self.path.open('rb') as image_file:
+            for section, entry in zip(self.manifest.sections, self.index.entries):
+                section_file_path = output / section.path
+                section_file_path.parent.mkdir(exist_ok=True)
+                with section_file_path.open('wb') as section_file:
+                    image_file.seek(entry.offset)
+                    copyfileobjex(image_file, section_file, limit=entry.size)
+
+    def verify(self) -> list[bool]:
+        # TODO this method should be generic
+        if not self.is_file:
+            raise RuntimeError('Calling verify() on a yet to be built image does not make sense.')
+        actuals = self.checksum()
+        return [actual == expected.checksum if expected is not None else False for actual, expected in zip_longest(actuals, self.metadata.checksums)]
+
+    def checksum(self) -> list[int]:
+        '''
+        If this object is created on a image file, compute and print the checksum block.
+        Otherwise, the precomputed checksum block during manifest load is returned instead.
+        '''
+        # TODO this method should be generic
+        if not self.is_file:
+            return [checksum.checksum for checksum in self.metadata.checksums]
+
+        declared_blocks = div_round_up(self.metadata.data_size, self.metadata.checksum_block_size)
+        with self.path.open('rb') as f:
+            checksum = Checksum(self.metadata.checksum_block_size)
+            while True:
+                data = f.read(0x100000)
+                if len(data) == 0:
+                    break
+                checksum.update(data)
+
+        d = checksum.digest()
+        pad_blocks = declared_blocks - len(d)
+        if pad_blocks > 0:
+            d.extend([0] * pad_blocks)
+
+        return d
+
+@dataclass
 class ImageFileV2:
     path: Path
     'Path to the image file if the image file exists, or the path to the manifest file if the image file is yet to be built.'
@@ -290,7 +512,7 @@ class ImageFileV2:
     # manifest is typed as None because we have a custom default value factory
     # that depends on the rest of the object states in case it is not passed
     # on initialization. In practice this value will never be None.
-    manifest: ImageManifest | None = field(default=None)
+    manifest: ImageManifest | MaybeNone = field(default=None)
 
     def __post_init__(self) -> None:
         if self.manifest is None:
@@ -386,7 +608,7 @@ class ImageFileV2:
 
         manifest_path = Path(manifest_path)
         with manifest_path.open('r') as manifest_file:
-            manifest = cast(ImageManifest, MmImageManifest().load(cast(dict[str, Any], yaml.safe_load(manifest_file))))
+            manifest = cast(ImageManifest, MmImageManifest().load(cast(dict[str, Any], yaml.safe_load(manifest_file))))  # pyright: ignore[reportInvalidCast]
 
         assert manifest.header_format_version == 2, 'Header format version must be 2.'
 
