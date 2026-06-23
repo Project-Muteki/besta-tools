@@ -2,8 +2,6 @@ import logging
 
 import pefile
 
-from elftools.elf.enums import ENUM_E_TYPE
-
 from besta_tools.elf2bestape.formats import ImageBuildContext
 
 

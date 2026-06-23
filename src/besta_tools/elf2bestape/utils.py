@@ -1,10 +1,9 @@
-from typing import Sequence, Any
+from typing import Any
+from collections.abc import Sequence
 
-import pefile
 from elftools.elf import constants as elfconsts
-
-# These may look unused but they are re-exports
-from ..common.utils import align, generate_padding
+from elftools.elf.elffile import ELFFile
+import pefile
 
 
 PEStructureDefinition = tuple[str, Sequence[str]]
@@ -28,7 +27,7 @@ def lalign(pos: int, blksize: int) -> int:
 def lpadding(pos: int, blksize: int) -> int:
     return pos - (pos // blksize * blksize)
 
-def get_executable_segment(elf):
+def get_executable_segment(elf: ELFFile) -> int:
     for idx, seg in enumerate(elf.iter_segments()):
         if seg['p_type'] == 'PT_LOAD' and seg['p_flags'] == (elfconsts.P_FLAGS.PF_R | elfconsts.P_FLAGS.PF_X):
             return idx

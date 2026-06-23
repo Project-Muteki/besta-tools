@@ -3,9 +3,10 @@ import io
 import logging
 from collections import defaultdict
 
-import pefile
-from elftools.elf.relocation import RelocationSection
 from elftools.elf import constants as elfconsts
+from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import SymbolTableSection
+import pefile
 
 from ..consts import EMPTY_IMAGE_RESOURCE_DIRECTORY, IMAGE_RESOURCE_DIRECTORY_SIZE, \
     EMPTY_IMAGE_RESOURCE_DIRECTORY_ENTRY, IMAGE_RESOURCE_DIRECTORY_ENTRY_SIZE, IMAGE_RESOURCE_DIRECTORY_ENTRY_ISDIR, \
@@ -13,8 +14,8 @@ from ..consts import EMPTY_IMAGE_RESOURCE_DIRECTORY, IMAGE_RESOURCE_DIRECTORY_SI
     IMAGE_RESOURCE_DIRECTORY_ENTRY_ISNAME, RSRC_NAME_ROMSPC, RSRC_NAME_NIL, EMPTY_SECTION_HEADER, AAELF_RELOC_ABSOLUTE, \
     R_ARM_PREL31, AAELF_RELOC_RELATIVE, AAELF_RELOC_IGNORE, ENUM_RELOC_NAME_ARM
 from ..formats import ImageBuildContext, SectionLeaf
-from ..utils import pefile_struct_from_dict, align
-from ...common.utils import BinaryBuilder
+from ..utils import pefile_struct_from_dict
+from ...common.utils import BinaryBuilder, align
 
 
 logger = logging.getLogger('elf2bestape.steps.generate_sections')
@@ -207,6 +208,7 @@ def generate_reloc(context: ImageBuildContext):
 
             for reloc in rel_section.iter_relocations():
                 symtab = elf.get_section(rel_section['sh_link'])
+                assert isinstance(symtab, SymbolTableSection)
                 sym, type_ = symtab.get_symbol(reloc['r_info_sym']), reloc['r_info_type']
                 sym_offset = sym['st_value']
                 rel_offset = reloc['r_offset']

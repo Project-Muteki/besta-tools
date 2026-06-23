@@ -7,7 +7,7 @@ from elftools.elf import enums as elfenums
 from .utils import pefile_struct_calcsize
 
 PEFILE_WARNING_TOO_MANY_0 = re.compile(
-    r"Byte 0x00 makes up [0-9]{2}\.?[0-9]+% of the file's contents. "
+    r"Byte 0x00 makes up [0-9]{2}\.?[0-9]+% of the file's contents. " +
     r"This may indicate truncation / malformation."
 )
 

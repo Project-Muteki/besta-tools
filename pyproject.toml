@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12,<4.0"
 dependencies = [
     "pefile>=2024.8.26,<2025.0.0",
-    "pyelftools>=0.32,<1.0",
+    "pyelftools>=0.33,<1.0",
     "click>=8.1.7,<9.0.0",
     "construct-typing>=0.6.2,<1.0.0",
     "marshmallow-dataclass>=8.7.0,<9.0.0",
@@ -39,6 +39,7 @@ dev = [
     "mypy>=1.17.1",
     "filetype-stubs @ git+https://github.com/Project-Muteki/filetype-stubs.git",
 ]
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

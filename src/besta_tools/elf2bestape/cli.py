@@ -47,7 +47,7 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
                    help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
     p.add_argument('-r', '--romspec-file', help='Include binary ROM spec file to make Type 2 ROM file.')
     p.add_argument('--deterministic', action=argparse.BooleanOptionalAction, default=True,
-                   help='Enable deterministic conversion. (i.e. populate the timestamp field with a hash value '
+                   help='Enable deterministic conversion. (i.e. populate the timestamp field with a hash value ' +
                         'measured from selected PE headers and all sections instead of the actual build timestamp)')
     return p, p.parse_args()
 

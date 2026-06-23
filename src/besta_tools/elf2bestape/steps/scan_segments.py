@@ -6,9 +6,10 @@ import pefile
 
 from elftools.elf import constants as elfconsts
 
-from ..utils import lpadding, align, lalign
+from ..utils import lpadding, lalign
 from ..formats import ImageBuildContext, SectionLeaf
 from ..consts import EMPTY_SECTION_HEADER, EMPTY_OPTIONAL_HEADER
+from ...common.utils import align
 
 logger = logging.getLogger('elf2bestape.steps.scan_segments')
 
@@ -85,8 +86,8 @@ def scan_segments(context: ImageBuildContext):
         sec_header_dict['SizeOfRawData'] = align(seg['p_filesz'] + lpad, 0x200)
         if lpad != 0:
             logger.warning(
-                'ELF segment %d not aligned with page boundary. '
-                'Manually padding it. This will slightly increase the executable size. '
+                'ELF segment %d not aligned with page boundary. ' +
+                'Manually padding it. This will slightly increase the executable size. ' +
                 'Please consider rebuilding the file with the appropriate page size.', idx)
         # To be fixed in pass 2
         # sec_header_dict['PointerToRawData']

@@ -4,7 +4,8 @@ import pefile
 
 from ..consts import EMPTY_DOS_HEADER, NT_HEADER, EMPTY_FILE_HEADER
 from ..formats import ImageBuildContext
-from ..utils import pefile_struct_calcsize, align
+from ..utils import pefile_struct_calcsize
+from ...common.utils import align
 
 
 def complete_headers(context: ImageBuildContext):

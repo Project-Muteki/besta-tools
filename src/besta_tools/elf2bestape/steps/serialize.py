@@ -1,12 +1,14 @@
 import logging
 import hashlib
-from typing import Sequence, Literal
+from collections.abc import Sequence
+from typing import Literal
 
 import pefile
 
 from ..consts import PEFILE_WARNING_TOO_MANY_0
 from ..formats import ImageBuildContext
-from ..utils import pefile_struct_from_dict, generate_padding
+from ..utils import pefile_struct_from_dict
+from ...common.utils import generate_padding
 
 logger = logging.getLogger('elf2bestape.steps.serialize')
 
