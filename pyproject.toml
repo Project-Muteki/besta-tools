@@ -1,43 +1,50 @@
-[tool.poetry]
+[project]
 name = "besta-tools"
 version = "1.1.0"
 description = "Tools for working with Besta data formats"
-authors = ["dogtopus <dogtopus@users.noreply.github.com>"]
+authors = [
+    {name = "dogtopus", email = "dogtopus@users.noreply.github.com"}
+]
 license = "MIT"
 readme = "README.md"
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "pefile>=2024.8.26,<2025.0.0",
+    "pyelftools>=0.32,<1.0",
+    "click>=8.1.7,<9.0.0",
+    "construct-typing>=0.6.2,<1.0.0",
+    "marshmallow-dataclass>=8.7.0,<9.0.0",
+    "pyyaml>=6.0.1,<7.0.0",
+    "pyusb>=1.2.1,<2.0.0",
+    "filetype>=1.2.0,<2.0.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-pefile = "^2024.8.26"
-pyelftools = "^0.32"
-click = "^8.1.7"
-construct-typing = "^0.6.2"
-marshmallow-dataclass = "^8.7.0"
-pyyaml = "^6.0.1"
-pyusb = "^1.2.1"
-libusb-package = { version = "^1.0.26.4", optional = true }
-filetype = "^1.2.0"
+[project.optional-dependencies]
+prebuilt-libusb = [
+    "libusb-package>=1.0.26.4,<1.0.27.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-ipython = "^8.26.0"
-types-pyyaml = "^6.0.12.20240311"
-pyusb-stubs = {git = "https://github.com/Project-Muteki/pyusb-stubs.git"}
-mypy = "^1.17.1"
-filetype-stubs = {git = "https://github.com/Project-Muteki/filetype-stubs.git"}
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.extras]
-prebuilt-libusb = ["libusb-package"]
-
-[tool.poetry.scripts]
+[project.scripts]
 elf2bestape = 'besta_tools.elf2bestape:main'
 titlemgr = 'besta_tools.titlemgr:main'
 romtool = 'besta_tools.romtool:app'
 imgtool = 'besta_tools.imgtool:app'
 dfutool = 'besta_tools.dfutool:app'
+
+[dependency-groups]
+dev = [
+    "ipython>=8.26.0",
+    "types-pyyaml>=6.0.12.20240311,<=7.0.0.0",
+    "pyusb-stubs @ git+https://github.com/Project-Muteki/pyusb-stubs.git",
+    "mypy>=1.17.1",
+    "filetype-stubs @ git+https://github.com/Project-Muteki/filetype-stubs.git",
+]
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{include = "besta_tools", from = "src"}]
 
 [tool.pyright]
 # This may be a burden for code with loose typing, or legit uses of Any. Downgrade severity to Info for now.

@@ -815,5 +815,5 @@ prebuilt-libusb = ["libusb-package"]
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.12"
-content-hash = "aa8a33a5616f2d1381dd77444e80e851648722e5c5b1130949787db4cb67d137"
+python-versions = ">=3.12,<4.0"
+content-hash = "f2516d60ccd3578ed16e04bdc04269dd6259e27bec47481da6b2f31a39a995ae"
