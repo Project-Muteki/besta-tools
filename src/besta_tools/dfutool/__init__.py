@@ -6,7 +6,7 @@ from io import SEEK_END, BufferedReader, BufferedWriter
 from pathlib import Path
 import sys
 import traceback
-from typing import TYPE_CHECKING, Self, cast, override
+from typing import Callable, TYPE_CHECKING, Self, cast, override
 import weakref
 
 import click
@@ -20,7 +20,7 @@ from besta_tools.dfutool.dfu import DfuDevice, Lun
 
 if TYPE_CHECKING:
     from types import TracebackType
-    from _typeshed import MaybeNone
+    from _typeshed import MaybeNone, SupportsRead
 
 
 @dataclass
@@ -96,6 +96,29 @@ def _pick_device(opts: GlobalOptions) -> DfuDevice | None:
                 click.echo(f'Using first device of type {kind.name} at {_format_usb_addr(dev)}.')
                 return DfuDevice(dev)
         return None
+
+
+def compare_progress(
+    f1: SupportsRead[bytes],
+    f2: SupportsRead[bytes],
+    limit: int,
+    length: int = 512,
+    progress_callback: Callable[[int], None] | None = None
+) -> bool:
+    r1 = f1.read
+    r2 = f2.read
+
+    while limit > 0:
+        bytes_to_read = min(length, limit)
+        data1, data2 = r1(bytes_to_read), r2(bytes_to_read)
+        if len(data1) == 0 or len(data2) == 0:
+            break
+        limit -= bytes_to_read
+        if progress_callback is not None:
+            progress_callback(bytes_to_read)
+        if data1 != data2:
+            return False
+    return True
 
 
 @click.group(
@@ -182,6 +205,37 @@ def do_reboot(ctx: click.Context) -> None:
 
 
 @app.command(
+    name='erase',
+    short_help='Instruct a device to erase itself and scan for bad blocks.',
+    help=(
+        '''
+        Issue a command to the device that instructs it to erase itself and
+        scan for bad blocks. Not all device support this command. Currently
+        the s3c series devices are known to support it.
+        '''
+    )
+)
+@click.pass_context
+def do_erase(ctx: click.Context) -> None:
+    opts = ctx.find_object(GlobalOptions)
+    assert opts is not None
+    dfu = _pick_device(opts)
+    if dfu is None:
+        click.echo('No matching device found.')
+        sys.exit(1)
+    if not opts.yes and not click.confirm(
+        'This will ERASE THE OS AND ALL USER DATA and render the device ' +
+        'UNBOOTABLE until new firmware is flashed onto it. Please DO NOT turn ' +
+        'off the device power when erase operation is in progress or it could ' +
+        'PERMANENTLY BRICK THE DEVICE! Do you still wish to proceed?'
+    ):
+        click.echo('Operation canceled.')
+        sys.exit(1)
+    with dfu.get_dfu_lun() as lun:
+        lun.probe_region(0)
+        lun.erase()
+
+@app.command(
     name='read',
     short_help='Read raw data from a device.'
 )
@@ -253,8 +307,13 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
     default=None,
     help='Number of bytes to write.'
 )
+@click.option(
+    '--verify/--no-verify',
+    default=True,
+    help='Number of bytes to write.'
+)
 @click.pass_context
-def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num_bytes: int | None) -> None:
+def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num_bytes: int | None, verify: bool) -> None:
     opts = ctx.find_object(GlobalOptions)
     assert opts is not None
     dfu = _pick_device(opts)
@@ -315,7 +374,25 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
             copyfileobjex_progress(input_, wr, limit, progress_callback=progress.update)
-        click.echo('Done.')
+        if verify:
+            click.echo('Verifying...')
+            lun.set_progress(0)
+            input_.seek(0)
+            progress = CopyProgress(lun, limit)
+            with lun.get_buffered_reader() as rd, progress:
+                if rd.seek(start_address) != start_address:
+                    click.echo('Cannot verify: Failed to seek to start address.')
+                    sys.exit(1)
+                result = compare_progress(input_, rd, limit, progress_callback=progress.update)
+            if result:
+                click.echo('Verified.')
+            else:
+                click.echo(
+                    'Verification FAILED. The NAND might have bad ' +
+                    'blocks or something got corrupted during USB transfer.'
+                )
+        else:
+            click.echo('Done.')
 
 @app.command(
     name='generate-udev-rule',
