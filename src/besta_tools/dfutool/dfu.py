@@ -14,6 +14,7 @@ from random import randrange
 import weakref
 
 from usb import RECIP_INTERFACE
+from usb.backend.libusb1 import LIBUSB_ERROR_PIPE
 from usb.core import Device, Endpoint, Interface, USBError
 from usb.util import CTRL_IN, ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, find_descriptor
 from usb.legacy import CLASS_MASS_STORAGE, TYPE_CLASS
@@ -221,11 +222,12 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
                 self._inquiry_result = inquiry
                 ready = True
                 break
-            except USBError:
+            except USBError as e:
                 # Clear STALL and wait 100ms before retrying in case the device
                 # is just being slow.
-                self.dev.in_ep.clear_halt()
-                self.dev.out_ep.clear_halt()
+                if e.backend_error_code == LIBUSB_ERROR_PIPE:
+                    self.dev.in_ep.clear_halt()
+                    self.dev.out_ep.clear_halt()
                 time.sleep(0.1)
                 continue
 
@@ -525,6 +527,42 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             raise CSWError(ret.bCSWStatus)
 
         if not self.besta_check_ack(res, BestaDfuCommand.CMD_SET_PROGRESS):
+            raise BestaNACK('Device NACKed the DFU request.')
+
+    def probe_region(self, region: int) -> None:
+        '''
+        Send the erase command to the device.
+        '''
+        if region < 0 or region > 2:
+            raise ValueError('Region must be between 0 and 2')
+
+        ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PROBE_REGION, region)
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        ret, res = self.scsi_besta_get_config()
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        if not self.besta_check_ack(res, BestaDfuCommand.CMD_PROBE_REGION):
+            raise BestaNACK('Device NACKed the DFU request.')
+
+    def erase(self, region: int = 0) -> None:
+        '''
+        Send the erase command to the device.
+        '''
+        if region < 0 or region > 2:
+            raise ValueError('Region must be between 0 and 2')
+
+        ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_ERASE_AND_SCAN, region)
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        ret, res = self.scsi_besta_get_config()
+        if ret.bCSWStatus != 0:
+            raise CSWError(ret.bCSWStatus)
+
+        if not self.besta_check_ack(res, BestaDfuCommand.CMD_ERASE_AND_SCAN):
             raise BestaNACK('Device NACKed the DFU request.')
 
     def reboot(self) -> None:
