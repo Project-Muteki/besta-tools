@@ -9,14 +9,15 @@ import traceback
 from typing import Callable, TYPE_CHECKING, Self, cast, override
 import weakref
 
-import click
+import click_extra as click
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption
 from click._termui_impl import ProgressBar
 from click.termui import progressbar
 from usb.core import Device
 
 from besta_tools.common.utils import anybase, bytes_unit, copyfileobjex_progress
 from besta_tools.dfutool.device import enumerate_device, generate_udev_file
-from besta_tools.dfutool.dfu import DfuDevice, Lun
+from besta_tools.dfutool.dfu import MAX_BULK_XFER_SIZE, DfuDevice, Lun
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -61,6 +62,7 @@ class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingType
 
     @override
     def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None, /) -> None:
+        self._lun.set_progress(self._pc)
         self._pb.__exit__(exc_type, exc_value, traceback)
         return None
 
@@ -69,7 +71,10 @@ class CopyProgress(AbstractContextManager):  # pyright: ignore[reportMissingType
         self._current += inc
         new_pc = int(round(self._current * 100 / self._total))
         if new_pc > self._pc:
-            self._lun.set_progress(new_pc)
+            # Defer the last 100% update to after we flush the writer to
+            # prevent the possibility of set_progress messing with flash lock.
+            if new_pc < 100:
+                self._lun.set_progress(new_pc)
             self._pc = new_pc
 
 
@@ -120,9 +125,16 @@ def compare_progress(
             return False
     return True
 
-
 @click.group(
-    help='Tool for interfacing with Besta DFU.'
+    name='dfutool',
+    help='Tool for interfacing with Besta DFU.',
+    params=[
+        ColorOption(),
+        NoColorOption(),
+        VerbosityOption(),
+        VerboseOption(),
+        QuietOption(),
+    ],
 )
 @click.option(
     '-d', '--device-index',
@@ -156,7 +168,7 @@ def compare_progress(
     help='Assume yes to all questions (DANGEROUS).'
 )
 @click.pass_context
-def app(ctx: click.Context, device_index: int, device_type: str | None, usb_address: UsbAddress | None, yes: bool):
+def app(ctx: click.Context, device_index: int, device_type: str | None, usb_address: UsbAddress | None, yes: bool) -> None:
     a = ctx.ensure_object(GlobalOptions)
     a.device_index = device_index
     a.device_type = device_type
@@ -277,7 +289,7 @@ def do_read(ctx: click.Context, output: BufferedWriter, start_address: int, num_
 
         click.echo(f'Reading {limit} bytes ({bytes_unit(limit)}) from device...')
         progress = CopyProgress(lun, limit)
-        with lun.get_buffered_reader() as rd, progress:
+        with progress, lun.get_buffered_reader() as rd:
             if rd.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
@@ -369,17 +381,18 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
 
         click.echo(f'Writing {limit} bytes ({bytes_unit(limit)}) to device...')
         progress = CopyProgress(lun, limit)
-        with lun.get_buffered_writer() as wr, progress:
+        # Ensure progress will only be flushed after writer has been flushed.
+        with progress, lun.get_buffered_writer() as wr:
             if wr.seek(start_address) != start_address:
                 click.echo('Failed to seek to start address.')
                 sys.exit(1)
-            copyfileobjex_progress(input_, wr, limit, progress_callback=progress.update)
+            copyfileobjex_progress(input_, wr, limit, length=MAX_BULK_XFER_SIZE, progress_callback=progress.update)
         if verify:
             click.echo('Verifying...')
             lun.set_progress(0)
             input_.seek(0)
             progress = CopyProgress(lun, limit)
-            with lun.get_buffered_reader() as rd, progress:
+            with progress, lun.get_buffered_reader() as rd:
                 if rd.seek(start_address) != start_address:
                     click.echo('Cannot verify: Failed to seek to start address.')
                     sys.exit(1)
@@ -395,7 +408,7 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
             click.echo('Done.')
 
 @app.command(
-    name='generate-udev-rule',
+    name='gen-udev',
     short_help='Generate udev rule file.',
     help=(
         '''
@@ -414,6 +427,6 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
     default=Path('./42-besta.rules'),
     help='Path to generated file.',
 )
-def do_generate_udev_rule(output: Path) -> None:
+def do_gen_udev(output: Path) -> None:
     generate_udev_file(output)
     click.echo(f'udev file {output} has been generated.')

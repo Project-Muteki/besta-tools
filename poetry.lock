@@ -17,6 +17,30 @@ astroid = ["astroid (>=2,<5)"]
 test = ["astroid (>=2,<5)", "pytest (<9.0)", "pytest-cov", "pytest-xdist"]
 
 [[package]]
+name = "boltons"
+version = "26.0.0"
+description = "When they're not builtins, they're boltons."
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "boltons-26.0.0-py3-none-any.whl", hash = "sha256:ba077cac51b27532299634f87f5589b4080fa94a011b4d43a9247f775e9215c7"},
+    {file = "boltons-26.0.0.tar.gz", hash = "sha256:5566d6cfd5a1e873d8e8476496287a9f92979964611ad9a9cecb6b0ef29b1edd"},
+]
+
+[[package]]
+name = "bracex"
+version = "2.6"
+description = "Bash style brace expander."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "bracex-2.6-py3-none-any.whl", hash = "sha256:0b0049264e7340b3ec782b5cb99beb325f36c3782a32e36e876452fd49a09952"},
+    {file = "bracex-2.6.tar.gz", hash = "sha256:98f1347cd77e22ee8d967a30ad4e310b233f7754dbf31ff3fceb76145ba47dc7"},
+]
+
+[[package]]
 name = "click"
 version = "8.4.1"
 description = "Composable command line interface toolkit"
@@ -30,6 +54,61 @@ files = [
 
 [package.dependencies]
 colorama = {version = "*", markers = "platform_system == \"Windows\""}
+
+[[package]]
+name = "click-extra"
+version = "8.1.0.dev0"
+description = "🌈 Drop-in replacement for Click to make user-friendly and colorful CLI"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = []
+develop = false
+
+[package.dependencies]
+boltons = ">=20"
+click = ">=8.3.1"
+cloup = ">=3.0.7"
+deepmerge = ">=1.0.1"
+extra-platforms = ">=8"
+tabulate = {version = ">=0.9", extras = ["widechars"]}
+wcmatch = ">=10"
+wcwidth = ">=0.2"
+
+[package.extras]
+all = ["click-extra[carapace,hjson,json5,jsonc,mkdocs,pygments,pytest,sphinx,toml,xml,yaml]"]
+carapace = ["pyyaml (>=6.0.3)"]
+hjson = ["hjson (>=3.1)"]
+json5 = ["json5 (>=0.12.1)"]
+jsonc = ["json-with-comments (>=1.2.10)"]
+mkdocs = ["mkdocs (>=1.4)", "pygments (>=2.14)", "pymdown-extensions (>=10)"]
+pygments = ["pygments (>=2.14)"]
+pytest = ["pytest (>=9)"]
+sphinx = ["docutils (>=0.20)", "pygments (>=2.14)", "sphinx (>=8)"]
+toml = ["tomlkit (>=0.13)"]
+xml = ["xmltodict (>=1)"]
+yaml = ["pyyaml (>=6.0.3)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/kdeldycke/click-extra"
+reference = "HEAD"
+resolved_reference = "a8f3f25bc44f01da64a15f7b8aa7ad030f617c07"
+
+[[package]]
+name = "cloup"
+version = "3.1.0"
+description = "Adds features to Click: option groups, constraints, subcommand sections and help themes."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "cloup-3.1.0-py2.py3-none-any.whl", hash = "sha256:f4cfbdcdc96d30bcbd8c75eaffb0651e9c57180f2aee4b300cf0dd168b8415ed"},
+    {file = "cloup-3.1.0.tar.gz", hash = "sha256:637c1e628fe98f3f20a5e44da591a72b42bf54d7d4527190bf39ed5f64af7585"},
+]
+
+[package.dependencies]
+click = ">=8.1.0,<9.0"
 
 [[package]]
 name = "colorama"
@@ -87,6 +166,21 @@ files = [
 ]
 
 [[package]]
+name = "deepmerge"
+version = "2.1.0"
+description = "A toolset for deeply merging Python dictionaries."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "deepmerge-2.1.0-py3-none-any.whl", hash = "sha256:8f148339a91d680a75ecb74ade235d9e759a93df373a0b04e9d31c8666cfeb75"},
+    {file = "deepmerge-2.1.0.tar.gz", hash = "sha256:07ca7a7b8935df596c512fa8161877c0487ac61f691c07766e7d71d2b23bdd2f"},
+]
+
+[package.extras]
+dev = ["black", "build", "mypy", "pytest", "pyupgrade", "sphinx", "sphinx-rtd-theme", "twine", "validate-pyproject[all]"]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 description = "Get the currently executing AST node of a frame, and other information"
@@ -100,6 +194,21 @@ files = [
 
 [package.extras]
 tests = ["asttokens (>=2.1.0)", "coverage", "coverage-enable-subprocess", "ipython", "littleutils", "pytest", "rich ; python_version >= \"3.11\""]
+
+[[package]]
+name = "extra-platforms"
+version = "13.0.1"
+description = "🔎 Detect architectures, platforms, shells, terminals, CI systems and agents, grouped by family"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "extra_platforms-13.0.1-py3-none-any.whl", hash = "sha256:fd3b572504557e4b48323dc9704baf2fa939aed37dba5d9963a4aeffd3c9e325"},
+    {file = "extra_platforms-13.0.1.tar.gz", hash = "sha256:2194e5cd8d58fbbba42d2810f15fea3da072020109998ca8d7ec938abcf59717"},
+]
+
+[package.extras]
+pytest = ["pytest (>=8.2.1)"]
 
 [[package]]
 name = "filetype"
@@ -728,6 +837,24 @@ pure-eval = "*"
 tests = ["cython", "littleutils", "pygments", "pytest", "typeguard"]
 
 [[package]]
+name = "tabulate"
+version = "0.10.0"
+description = "Pretty-print tabular data"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3"},
+    {file = "tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d"},
+]
+
+[package.dependencies]
+wcwidth = {version = "*", optional = true, markers = "extra == \"widechars\""}
+
+[package.extras]
+widechars = ["wcwidth"]
+
+[[package]]
 name = "traitlets"
 version = "5.15.1"
 description = "Traitlets Python configuration system"
@@ -799,12 +926,27 @@ mypy-extensions = ">=0.3.0"
 typing-extensions = ">=3.7.4"
 
 [[package]]
+name = "wcmatch"
+version = "10.1"
+description = "Wildcard/glob file name matcher."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "wcmatch-10.1-py3-none-any.whl", hash = "sha256:5848ace7dbb0476e5e55ab63c6bbd529745089343427caa5537f230cc01beb8a"},
+    {file = "wcmatch-10.1.tar.gz", hash = "sha256:f11f94208c8c8484a16f4f48638a85d771d9513f4ab3f37595978801cb9465af"},
+]
+
+[package.dependencies]
+bracex = ">=2.1.1"
+
+[[package]]
 name = "wcwidth"
 version = "0.8.1"
 description = "Measures the displayed width of unicode strings in a terminal"
 optional = false
 python-versions = ">=3.8"
-groups = ["dev"]
+groups = ["main", "dev"]
 files = [
     {file = "wcwidth-0.8.1-py3-none-any.whl", hash = "sha256:f453740b1e4a4f3291faa37944c555d71056c4da08d59809b307ef4feba695c8"},
     {file = "wcwidth-0.8.1.tar.gz", hash = "sha256:faf5b4a5366a72dc49cad48cdf21f52bdf63bdda995178e483ba247ff79089b9"},
@@ -816,4 +958,4 @@ prebuilt-libusb = ["libusb-package"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "dce30abe19d1055649218df999aea77e40eda3e88b793409ba80cb3fc8d86dfb"
+content-hash = "4d1e25db206ae6f0e102513154fdb63ceb2992becf0bd7c14dc952bc0e3f2a4f"

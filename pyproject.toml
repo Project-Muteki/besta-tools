@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0.1,<7.0.0",
     "pyusb>=1.2.1,<2.0.0",
     "filetype>=1.2.0,<2.0.0",
+    "click-extra @ git+https://github.com/kdeldycke/click-extra",
 ]
 
 [project.optional-dependencies]

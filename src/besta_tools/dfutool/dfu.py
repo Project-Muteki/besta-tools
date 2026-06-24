@@ -178,6 +178,7 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
     _io_instances: list[DfuIo]
     _bio_instances: list[BufferedReader | BufferedWriter | BufferedRandom]
     _closed: bool
+    _tag: int
 
     @property
     def capacity(self) -> ReadCapacity10Response:
@@ -209,6 +210,7 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         self._io_instances = []
         self._bio_instances = []
         self._closed = False
+        self._tag = randrange(0, 0x1_0000_0000)
 
         ready = False
         for _ in range(10):
@@ -330,11 +332,11 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             inq[1] & SCSI_INQUIRY_HEADER_F1_RMB == SCSI_INQUIRY_HEADER_F1_RMB
         )
 
-    def scsi_raw_write(self, cmd: bytes | bytearray, data: bytes | None = None) -> CSW:
+    def scsi_raw_write(self, tag: int | None, cmd: bytes | bytearray, data: bytes | None = None) -> CSW:
         '''
         Send a write SCSI command and optionally send extra data.
         '''
-        tag = randrange(0, 0x100000000)
+        tag = self._tag if tag is None else tag
         cbw = CBW(
             dCBWTag=tag,
             dCBWDataTransferLength=len(data) if data is not None else 0,
@@ -351,11 +353,11 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         csw.dCSWTag ^= tag  # If tags are the same, returned dCSWTag should be a 0.
         return csw
 
-    def scsi_raw_read(self, cmd: bytes | bytearray, length: int = 0) -> tuple[CSW, bytes]:
+    def scsi_raw_read(self, tag: int | None, cmd: bytes | bytearray, length: int = 0) -> tuple[CSW, bytes]:
         '''
         Send a read SCSI command and optionally request data.
         '''
-        tag = randrange(0, 0x100000000)
+        tag = self._tag if tag is None else tag
         cbw = CBW(
             dCBWTag=tag,
             dCBWDataTransferLength=length,
@@ -371,12 +373,12 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         csw.dCSWTag ^= tag  # If tags are the same, returned dCSWTag should be a 0.
         return csw, data
 
-    def scsi_raw_read_into(self, cmd: bytes | bytearray, buf: array[int] | None = None) -> tuple[CSW, int]:
+    def scsi_raw_read_into(self, tag: int | None, cmd: bytes | bytearray, buf: array[int] | None = None) -> tuple[CSW, int]:
         '''
         Send a read SCSI command and optionally request data to be put into
         `buf`. Returns the CSW and number of bytes received.
         '''
-        tag = randrange(0, 0x100000000)
+        tag = self._tag if tag is None else tag
         cbw = CBW(
             dCBWTag=tag,
             dCBWDataTransferLength=len(buf) if buf is not None else 0,
@@ -394,7 +396,7 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         csw.dCSWTag ^= tag  # If tags are the same, returned dCSWTag should be a 0.
         return csw, read_size
 
-    def scsi_besta_set_config(self, cmd: BestaDfuCommand, param: int, data: bytes | None = None) -> CSW:
+    def scsi_besta_set_config(self, cmd: BestaDfuCommand, param: int, data: bytes | None = None, tag: int | None = None) -> CSW:
         '''
         Issue a Besta DFU Set Config command with the specified command code,
         parameter and optional data.
@@ -409,20 +411,20 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             payload = bytearray(256)
             payload[:len(data)] = data
             req.payload = payload
-        return self.scsi_raw_write(scsi_cmd, CsBestaDfuConfigPacket.build(req))
+        return self.scsi_raw_write(tag, scsi_cmd, CsBestaDfuConfigPacket.build(req))
 
-    def scsi_besta_get_config(self) -> tuple[CSW, BestaDfuConfigPacket]:
+    def scsi_besta_get_config(self, tag: int | None = None) -> tuple[CSW, BestaDfuConfigPacket]:
         '''
         Issue a Besta DFU Get Config command and return the response from the
         device.
         '''
         scsi_cmd = bytearray(16)
         scsi_cmd[0] = BestaDfuSbcOpcode.GET_CONFIG
-        ret, res_data = self.scsi_raw_read(scsi_cmd, CsBestaDfuConfigPacket.sizeof())
+        ret, res_data = self.scsi_raw_read(tag, scsi_cmd, CsBestaDfuConfigPacket.sizeof())
         res = CsBestaDfuConfigPacket.parse(res_data)
         return ret, res
 
-    def scsi_read10(self, lba: int, blks: int, flags: int = 0, group: int = 0, control: int = 0) -> tuple[CSW, bytes]:
+    def scsi_read10(self, lba: int, blks: int, flags: int = 0, group: int = 0, control: int = 0, tag: int | None = None) -> tuple[CSW, bytes]:
         '''
         Issue a SCSI Read(10) command.
         '''
@@ -433,10 +435,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         scsi_cmd[6] = group & 0b11111
         scsi_cmd[7:9] = blks.to_bytes(2, 'big')
         scsi_cmd[9] = control
-        ret, res_data = self.scsi_raw_read(scsi_cmd, blks * self._capacity.sector_size)
+        ret, res_data = self.scsi_raw_read(tag, scsi_cmd, blks * self._capacity.sector_size)
         return ret, res_data
 
-    def scsi_write10(self, lba: int, data: bytes, flags: int = 0, group: int = 0, control: int = 0) -> CSW:
+    def scsi_write10(self, lba: int, data: bytes, flags: int = 0, group: int = 0, control: int = 0, tag: int | None = None) -> CSW:
         '''
         Issue a SCSI Write(10) command. Length of input data must be aligned to sector boundary.
         '''
@@ -451,30 +453,30 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         scsi_cmd[6] = group & 0b11111
         scsi_cmd[7:9] = blks.to_bytes(2, 'big')
         scsi_cmd[9] = control
-        ret = self.scsi_raw_write(scsi_cmd, data)
+        ret = self.scsi_raw_write(tag, scsi_cmd, data)
         return ret
 
-    def scsi_read_capacity10(self, control: int = 0) -> tuple[CSW, ReadCapacity10Response]:
+    def scsi_read_capacity10(self, control: int = 0, tag: int | None = None) -> tuple[CSW, ReadCapacity10Response]:
         '''
         Issue a SCSI Read Capacity(10) command.
         '''
         scsi_cmd = bytearray(10)
         scsi_cmd[0] = SCSI_CMD_READ_CAPACITY10
         scsi_cmd[9] = control
-        ret, res_data = self.scsi_raw_read(scsi_cmd, 8)
+        ret, res_data = self.scsi_raw_read(tag, scsi_cmd, 8)
         return ret, ReadCapacity10Response.from_bytes(res_data)
 
-    def scsi_test_unit_ready(self, control: int = 0) -> CSW:
+    def scsi_test_unit_ready(self, control: int = 0, tag: int | None = None) -> CSW:
         '''
         Issue a SCSI Test Unit Ready command.
         '''
         scsi_cmd = bytearray(6)
         scsi_cmd[0] = SCSI_CMD_TEST_UNIT_READY
         scsi_cmd[5] = control
-        ret = self.scsi_raw_write(scsi_cmd)
+        ret = self.scsi_raw_write(tag, scsi_cmd)
         return ret
 
-    def scsi_inquiry(self, len: int, page: int = 0, control: int = 0) -> tuple[CSW, bytes]:
+    def scsi_inquiry(self, len: int, page: int = 0, control: int = 0, tag: int | None = None) -> tuple[CSW, bytes]:
         '''
         Issue a SCSI Inquiry command.
         '''
@@ -483,7 +485,7 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         scsi_cmd[1:3] = page.to_bytes(2, 'big')
         scsi_cmd[4] = len
         scsi_cmd[5] = control
-        ret, res_data = self.scsi_raw_read(scsi_cmd, len)
+        ret, res_data = self.scsi_raw_read(tag, scsi_cmd, len)
         return ret, res_data
 
     @staticmethod
@@ -494,20 +496,24 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         '''
         Ping the device.
         '''
-        ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG)
-        if ret.bCSWStatus != 0:
-            print('SET_CONFIG bCSWStatus error', ret)
-            return False
+        try:
+            ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG)
+            if ret.bCSWStatus != 0:
+                print('SET_CONFIG bCSWStatus error', ret)
+                return False
 
-        ret, res = self.scsi_besta_get_config()
-        if ret.bCSWStatus != 0:
-            print('GET_CONFIG bCSWStatus error', ret)
-            return False
+            ret, res = self.scsi_besta_get_config()
+            if ret.bCSWStatus != 0:
+                print('GET_CONFIG bCSWStatus error', ret)
+                return False
 
-        if self.besta_check_ack(res, BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG):
-            return True
-        else:
-            print('NACK', res)
+            if self.besta_check_ack(res, BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG):
+                return True
+            else:
+                print('NACK', res)
+                return False
+        except USBError as e:
+            print(f'USB error: {e}')
             return False
 
     def set_progress(self, value: int) -> None:
@@ -546,6 +552,17 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
 
         if not self.besta_check_ack(res, BestaDfuCommand.CMD_PROBE_REGION):
             raise BestaNACK('Device NACKed the DFU request.')
+
+    def probe_all_regions(self) -> set[int]:
+        result: set[int] = set()
+        for i in range(3):
+            try:
+                self.probe_region(i)
+                result.add(i)
+            except BestaNACK:
+                # NACK indicates the region does not exist. Just skip past it.
+                continue
+        return result
 
     def erase(self, region: int = 0) -> None:
         '''
@@ -603,11 +620,14 @@ class DfuIo(RawIOBase):
     _lba: int
     _boffset: int
 
+    _tag: int
+
     def __init__(self, lun: Lun):
         self._lun = weakref.proxy(lun)
         self._lba = 0
         self._boffset = 0
         self._lbasize = lun.capacity.sector_size
+        self._tag = randrange(0, 0x1_0000_0000)
 
     def _check_closed(self) -> None:
         if self.closed:
@@ -677,7 +697,7 @@ class DfuIo(RawIOBase):
         ltrim = self._boffset
         blks, rtrim, new_lba, new_boffset = self._plan_io(size)
 
-        res, data = self._lun.scsi_read10(lba, blks)
+        res, data = self._lun.scsi_read10(lba, blks, tag=self._tag)
         if res.bCSWStatus != 0:
             raise IOError(EIO, strerror(EIO))
 
@@ -723,7 +743,7 @@ class DfuIo(RawIOBase):
             wbuf = mv[:written]
             #print('whole lba', lba, 'data', mv[:written].hex())
         elif rpad != 0:
-            res, data = self._lun.scsi_read10(lba, 1)
+            res, data = self._lun.scsi_read10(lba, 1, tag=self._tag)
             if res.bCSWStatus != 0:
                 raise IOError(EIO, strerror(EIO))
             data_a = bytearray(data)
@@ -733,7 +753,7 @@ class DfuIo(RawIOBase):
             #print('single lba', lba, 'data', data_a.hex())
             written = rpad - lpad
         else:
-            res, data = self._lun.scsi_read10(lba, 1)
+            res, data = self._lun.scsi_read10(lba, 1, tag=self._tag)
             if res.bCSWStatus != 0:
                 raise IOError(EIO, strerror(EIO))
             data_a = bytearray()
@@ -744,7 +764,7 @@ class DfuIo(RawIOBase):
             wbuf = data_a
             #print('multiple lba', lba, 'data', data_a.hex())
 
-        res = self._lun.scsi_write10(lba, bytes(wbuf))
+        res = self._lun.scsi_write10(lba, bytes(wbuf), tag=self._tag)
         if res.bCSWStatus != 0:
            raise IOError(EIO, strerror(EIO))
 
