@@ -1,6 +1,9 @@
+from .._version import *
+
 from typing import TextIO, Self
 
-import click
+import click_extra as click
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
 import dataclasses
 import pathlib
 import sys
@@ -77,7 +80,16 @@ class TitleIndex:
 
 
 @click.group(
+    name='titlemgr',
     help='Applet title index manager.',
+    params=[
+        ColorOption(),
+        NoColorOption(),
+        VerbosityOption(),
+        VerboseOption(),
+        QuietOption(),
+        VersionOption(),
+    ],
 )
 def app():
     pass
@@ -141,7 +153,3 @@ def do_validate(path: str, metadata_only: bool, encoding: str):
         click.echo(f'WARNING: {failed_io} file(s) could not be read.')
     if failed_checksum > 0:
         click.echo(f'WARNING: {failed_checksum} computed checksum did NOT match.')
-
-
-def main():
-    app()

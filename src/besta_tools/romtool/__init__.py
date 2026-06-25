@@ -1,14 +1,26 @@
+from .._version import *
+
 from typing import BinaryIO
 
 import tomllib
 
-import click
+import click_extra as click
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
 
 from besta_tools.romtool.builder import build_embeddable_from_spec_file
 
 
 @click.group(
+    name='romtool',
     help='Tool for working with ROM files.',
+    params=[
+        ColorOption(),
+        NoColorOption(),
+        VerbosityOption(),
+        VerboseOption(),
+        QuietOption(),
+        VersionOption(),
+    ],
 )
 def app():
     pass

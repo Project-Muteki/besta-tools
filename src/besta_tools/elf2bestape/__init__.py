@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-from .cli import main
+from .cli import app
 
 
-if __name__ == '__main__':
-    main()
+__all__ = ['app']

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from .._version import *
+
 from pathlib import Path
 import sys
 
-import click
+import click_extra as click
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
 
 from .formats import (
     ImageIndexEntryV1,
@@ -15,7 +18,18 @@ from .formats import (
 )
 
 
-@click.group(help='Tool for packing/unpacking Besta partition image files.')
+@click.group(
+    name='imgtool',
+    help='Tool for packing/unpacking Besta partition image files.',
+    params=[
+        ColorOption(),
+        NoColorOption(),
+        VerbosityOption(),
+        VerboseOption(),
+        QuietOption(),
+        VersionOption(),
+    ],
+)
 def app():
     pass
 

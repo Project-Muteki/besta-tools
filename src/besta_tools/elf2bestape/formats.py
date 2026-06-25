@@ -1,9 +1,12 @@
 from typing import TypedDict, NamedTuple, TYPE_CHECKING, NotRequired, Any
 
 if TYPE_CHECKING:
-    import argparse
     import io
     from elftools.elf.elffile import ELFFile
+
+
+class ExtraOptions(NamedTuple):
+    deterministic: bool
 
 
 class SectionLeaf(NamedTuple):
@@ -13,7 +16,7 @@ class SectionLeaf(NamedTuple):
 
 
 class ImageBuildContext(TypedDict):
-    args: 'argparse.Namespace'
+    args: ExtraOptions
     elf: 'ELFFile'
     elf_base: int
     image_base: int

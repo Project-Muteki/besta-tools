@@ -42,14 +42,14 @@ files = [
 
 [[package]]
 name = "click"
-version = "8.4.1"
+version = "8.4.2"
 description = "Composable command line interface toolkit"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "click-8.4.1-py3-none-any.whl", hash = "sha256:482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2"},
-    {file = "click-8.4.1.tar.gz", hash = "sha256:918b5633eddf6b41c32d4f454bf0de810065c74e3f7dbf8ee5452f8be88d3e96"},
+    {file = "click-8.4.2-py3-none-any.whl", hash = "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76"},
+    {file = "click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6"},
 ]
 
 [package.dependencies]
@@ -57,13 +57,15 @@ colorama = {version = "*", markers = "platform_system == \"Windows\""}
 
 [[package]]
 name = "click-extra"
-version = "8.1.0.dev0"
+version = "8.1.1"
 description = "🌈 Drop-in replacement for Click to make user-friendly and colorful CLI"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-files = []
-develop = false
+files = [
+    {file = "click_extra-8.1.1-py3-none-any.whl", hash = "sha256:73b51c2247177a2830573420d90f9bdc07dbcd2d226e34d098a7f4cd53972180"},
+    {file = "click_extra-8.1.1.tar.gz", hash = "sha256:d9fa8de46b5fac91c7cbb0be5e1a788f04845d01a5580f210f90761f16be7cd6"},
+]
 
 [package.dependencies]
 boltons = ">=20"
@@ -88,12 +90,6 @@ sphinx = ["docutils (>=0.20)", "pygments (>=2.14)", "sphinx (>=8)"]
 toml = ["tomlkit (>=0.13)"]
 xml = ["xmltodict (>=1)"]
 yaml = ["pyyaml (>=6.0.3)"]
-
-[package.source]
-type = "git"
-url = "https://github.com/kdeldycke/click-extra"
-reference = "HEAD"
-resolved_reference = "a8f3f25bc44f01da64a15f7b8aa7ad030f617c07"
 
 [[package]]
 name = "cloup"
@@ -958,4 +954,4 @@ prebuilt-libusb = ["libusb-package"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "4d1e25db206ae6f0e102513154fdb63ceb2992becf0bd7c14dc952bc0e3f2a4f"
+content-hash = "2076c0758c62c145b6ccab0504e02764a64b28da5f975e8e2c4a930f0bac5a59"

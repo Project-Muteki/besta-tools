@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .._version import *
+
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from io import SEEK_END, BufferedReader, BufferedWriter
@@ -10,7 +12,7 @@ from typing import Callable, TYPE_CHECKING, Self, cast, override
 import weakref
 
 import click_extra as click
-from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
 from click._termui_impl import ProgressBar
 from click.termui import progressbar
 from usb.core import Device
@@ -134,6 +136,7 @@ def compare_progress(
         VerbosityOption(),
         VerboseOption(),
         QuietOption(),
+        VersionOption(),
     ],
 )
 @click.option(

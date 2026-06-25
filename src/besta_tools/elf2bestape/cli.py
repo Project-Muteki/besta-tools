@@ -1,14 +1,20 @@
-import argparse
+from pathlib import Path
+
+from .._version import *
+
 import io
 import logging
-import os
 import shutil
 from typing import BinaryIO, Callable
+
+import click_extra as click
+from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
+from click_extra import LogLevel
 
 from elftools.elf.elffile import ELFFile
 
 from .consts import BESTAPE_MAX_ROMSPEC_SIZE, BESTAPE_MAX_HEADER_SIZE
-from .formats import ImageBuildContext
+from .formats import ImageBuildContext, ExtraOptions
 from .steps.serialize import serialize
 from .utils import get_executable_segment
 
@@ -32,27 +38,7 @@ STEPS: list[Callable[[ImageBuildContext], None]] = [
 ]
 
 
-def parse_loglevel(level: str) -> int | str:
-    try:
-        return int(level)
-    except ValueError:
-        return level
-
-
-def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
-    p = argparse.ArgumentParser(description='Generate Besta PE file from an AAELF file.')
-    p.add_argument('elf', help='Input AAELF file.')
-    p.add_argument('-l', '--log-level', type=parse_loglevel, default='INFO', help='Set log level.')
-    p.add_argument('-o', '--output',
-                   help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).')
-    p.add_argument('-r', '--romspec-file', help='Include binary ROM spec file to make Type 2 ROM file.')
-    p.add_argument('--deterministic', action=argparse.BooleanOptionalAction, default=True,
-                   help='Enable deterministic conversion. (i.e. populate the timestamp field with a hash value ' +
-                        'measured from selected PE headers and all sections instead of the actual build timestamp)')
-    return p, p.parse_args()
-
-
-def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: bytes | None, args: argparse.Namespace):
+def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: bytes | None, args: ExtraOptions):
     elf = ELFFile(elf_file)
     executable_seg = get_executable_segment(elf)
     elf_base = elf.get_segment(executable_seg)['p_vaddr']
@@ -73,27 +59,63 @@ def convert(elf_file: BinaryIO, pe_file: io.BytesIO, romspec: bytes | None, args
         step(context)
 
 
-def main():
-    _, args = parse_args()
+@click.command(
+    name='elf2bestape',
+    help='Generate Besta PE file from an AAELF file (ELF).',
+    params=[
+        ColorOption(),
+        NoColorOption(),
+        VerbosityOption(
+            # Old cli d -l/--log-level and defaulted the level to INFO.
+            # Replicate the behavior here.
+            param_decls=['-l', '--log-level'],
+            default=LogLevel.INFO,
+        ),
+        VerboseOption(),
+        QuietOption(),
+        VersionOption(),
+    ],
+)
+@click.argument(
+    'elf',
+    type=click.Path(file_okay=True, readable=True, path_type=Path),
+)
+@click.option(
+    '-o', '--output',
+    type=click.Path(writable=True, path_type=Path),
+    default=None,
+    help='Besta PE file to output (or AAELF\'s basename + .exe if not supplied).',
+)
+@click.option(
+    '-r', '--romspec-file',
+    type=click.Path(file_okay=True, readable=True, path_type=Path),
+    default=None,
+    help='Include binary ROM spec file to make Type 2 ROM file.',
+)
+@click.option(
+    '--deterministic/--no-deterministic',
+    default=True,
+    help=(
+        'Enable deterministic conversion. (i.e. populate the timestamp ' +
+        'field with a hash value measured from selected PE headers and ' +
+        'all sections instead of the actual build timestamp)'
+    ),
+)
+def app(elf: Path, output: Path | None, romspec_file: Path | None, deterministic: bool) -> None:
+    if output is None:
+        output = elf.with_suffix('.exe')
 
-    logging.basicConfig(level=args.log_level if args.log_level is not None else None)
-
-    if args.output is None:
-        output_path = f'{os.path.splitext(args.elf)[0]}{os.path.extsep}exe'
-    else:
-        output_path = args.output
-
-    if args.romspec_file is not None:
-        if os.stat(args.romspec_file).st_size > BESTAPE_MAX_ROMSPEC_SIZE:
+    if romspec_file is not None:
+        if romspec_file.stat().st_size > BESTAPE_MAX_ROMSPEC_SIZE:
             raise RuntimeError('Refusing to link ROM spec file of size greater than 32KiB.')
-        with open(args.romspec_file, 'rb') as romspec_file:
-            romspec = romspec_file.read()
+        with romspec_file.open('rb') as romspec_file_:
+            romspec = romspec_file_.read()
     else:
         romspec = None
 
-    with open(args.elf, 'rb') as elf_file:
+    with elf.open('rb') as elf_file:
         pe_file = io.BytesIO()
-        convert(elf_file, pe_file, romspec, args)
-    with open(output_path, 'wb') as actual_pe_file:
+        convert(elf_file, pe_file, romspec, ExtraOptions(deterministic=deterministic))
+    with output.open('wb') as actual_pe_file:
         pe_file.seek(0)
         shutil.copyfileobj(pe_file, actual_pe_file)
