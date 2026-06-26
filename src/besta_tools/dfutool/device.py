@@ -5,6 +5,8 @@ from collections.abc import Generator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
+from uuid import NAMESPACE_URL, UUID, uuid5
+from urllib.parse import ParseResult, urlencode, urlunparse
 
 import usb.core
 from usb.backend import libusb1
@@ -49,7 +51,23 @@ class DfuType:
     product: str
     supported: bool = field(default=True)
 
-    def emit_udev_rule(self):
+    def uuid5(self) -> UUID:
+        url = urlunparse(ParseResult(
+            scheme='usb',
+            netloc='',
+            path='',
+            params='',
+            query=urlencode([
+                ('vid', f'{self.vid:04x}'),
+                ('pid', f'{self.pid:04x}'),
+                ('manufacturer', self.manufacturer),
+                ('product', self.product),
+            ]),
+            fragment='',
+        ))
+        return uuid5(NAMESPACE_URL, url)
+
+    def emit_udev_rule(self) -> str:
         return (
             f'# {self.description}\n'
             f'SUBSYSTEM=="usb", ATTR{{idVendor}}=="{self.vid:04x}", ATTR{{idProduct}}=="{self.pid:04x}", '
@@ -57,6 +75,15 @@ class DfuType:
             f'DRIVER=="usb-storage", ACTION=="add", ATTRS{{idVendor}}=="{self.vid:04x}", ATTRS{{idProduct}}=="{self.pid:04x}", '
             f'ATTRS{{manufacturer}}=="{self.manufacturer}", ATTRS{{product}}=="{self.product}", '
             f'RUN+="/bin/sh -c \'echo -n $kernel > $sys$devpath/driver/unbind\'"'
+        )
+
+    def emit_zadig_cfg(self) -> str:
+        return (
+            '[device]\n' +
+            f'  Description = "{self.description.replace('"', '_')}"\n' +
+            f'  VID = 0x{self.vid:04X}\n' +
+            f'  PID = 0x{self.pid:04X}\n' +
+            f'  GUID = "{{{str(self.uuid5()).upper()}}}"\n'
         )
 
 
@@ -115,6 +142,15 @@ def generate_udev_file(path: Path) -> None:
         for dev_type in KNOWN_DEVICE_TYPES:
             udev_file.write(dev_type.emit_udev_rule())
             udev_file.write('\n')
+
+def generate_zadig_files(path: Path) -> None:
+    path.mkdir(exist_ok=True)
+
+    for dev_type in KNOWN_DEVICE_TYPES:
+        output_path = path / f'{dev_type.name}.cfg'
+        with output_path.open('w') as output_file:
+            output_file.write(dev_type.emit_zadig_cfg())
+
 
 @overload
 def trim_nul_terminated(value: None) -> None: ...

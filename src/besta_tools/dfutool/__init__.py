@@ -18,7 +18,7 @@ from click.termui import progressbar
 from usb.core import Device
 
 from besta_tools.common.utils import anybase, bytes_unit, copyfileobjex_progress
-from besta_tools.dfutool.device import enumerate_device, generate_udev_file
+from besta_tools.dfutool.device import enumerate_device, generate_udev_file, generate_zadig_files
 from besta_tools.dfutool.dfu import MAX_BULK_XFER_SIZE, DfuDevice, Lun
 
 if TYPE_CHECKING:
@@ -129,7 +129,7 @@ def compare_progress(
 
 @click.group(
     name='dfutool',
-    help='Tool for interfacing with Besta DFU.',
+    help='Tool for interfacing with Besta Device Firmware Update (DFU) mode.',
     params=[
         ColorOption(),
         NoColorOption(),
@@ -410,17 +410,42 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
         else:
             click.echo('Done.')
 
-@app.command(
-    name='gen-udev',
-    short_help='Generate udev rule file.',
+@app.group(
+    name='gen',
+    short_help='Generate OS-specific device driver files.',
+    help=(
+        '''
+        By design, dfutool does not use the operating system's SCSI driver, and
+        instead uses libusb to communicate with the DFU's USB Mass Storage
+        interface directly to avoid driver-specific behavior or other programs
+        from messing with the DFU mode operation. Although dfutool makes use of
+        libusb's attach/detach kernel driver feature, it's still recommended to
+        disable the SCSI driver for these devices as early as possible as there
+        is a potential for the SCSI driver to interfere with the DFU by leaving
+        them in an unpredictable state, and thus causing undesired and
+        potentially dangerous effects. Additionally, OSes may refuse to allow
+        dfutool to access the raw DFU device with the default privilege and/or
+        driver configuration. The gen command is developed to solve these
+        problems. It generates OS-specific configuration files that set up
+        device permission and driver so dfutool can work safely and optimally
+        under these systems.
+        '''
+    ),
+)
+def do_gen() -> None:
+    pass
+
+
+@do_gen.command(
+    name='udev',
+    short_help='Generate udev rule file (Linux).',
     help=(
         '''
         Generate udev rules file and place it at specified path.
 
         The rules set the uaccess tag to allow non-root access of the device,
         and automatically detach the Linux USB Mass Storage driver from listed
-        devices as there is a potential for the driver to interfere with them
-        and cause undesired and potentially dangerous effect.
+        devices.
         '''
     ),
 )
@@ -433,3 +458,30 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
 def do_gen_udev(output: Path) -> None:
     generate_udev_file(output)
     click.echo(f'udev file {output} has been generated.')
+
+
+@do_gen.command(
+    name='zadig',
+    short_help='Generate zadig config files (Windows).',
+    help=(
+        '''
+        Generate zadig config files and place them under specified path.
+
+        Download zadig from https://zadig.akeo.ie/ to use these files through
+        the Device -> Load Preset Device option. This is required on Windows
+        systems as otherwise libusb will not have access to the DFU devices.
+
+        Kindly refer to https://github.com/pbatard/libwdi/wiki/Zadig#basic-usage
+        for zadig usage.
+        '''
+    ),
+)
+@click.option(
+    '-o', '--output',
+    type=click.Path(dir_okay=True, file_okay=False, writable=True, path_type=Path),
+    default=Path('./zadig'),
+    help='Path to create a directory for generated files (must not already exist).',
+)
+def do_gen_zadig(output: Path) -> None:
+    generate_zadig_files(output)
+    click.echo(f'zadig config files have been generated under {output}.')
