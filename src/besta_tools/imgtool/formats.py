@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 import math
 import re
 import shutil
+import sys
 
 import yaml
 
@@ -37,10 +38,15 @@ from marshmallow import ValidationError
 from marshmallow import fields as mm_fields
 from marshmallow_dataclass import class_schema as mm_class_schema
 
-from filetype import guess_extension
+from filetype import guess, add_type as ft_add_type
+from .filetype import TYPES
 
 from ..common.formats import CsChecksumValue, ChecksumValue
 from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
+
+
+for t in TYPES:
+    ft_add_type(t)
 
 
 if TYPE_CHECKING:
@@ -85,7 +91,7 @@ IMAGE_TYPE_MAP_R = {v: k for k, v in IMAGE_TYPE_MAP.items()}
 
 RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
 
-MAGIC_PROBE_SIZE = 8192  # 8KiB, as per the default of filetype
+MAGIC_PROBE_SIZE = 65536  # 8KiB, as per the default of filetype
 
 
 class ProbeError(RuntimeError):
@@ -357,6 +363,7 @@ class AbstractImageFile(ABC):
     is_file: bool
     'True if object is backed by a real image file, False if object is backed by separate files listed in the manifest.'
     manifest: ImageManifest | MaybeNone
+    guessed_mime: list[str] | None
 
     @property
     @abstractmethod
@@ -492,6 +499,7 @@ class ImageFileV1(AbstractImageFile):
     # that depends on the rest of the object states in case it is not passed
     # on initialization. In practice this value will never be None.
     manifest: ImageManifest | MaybeNone = field(default=None)
+    guessed_mime: list[str] | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self.manifest is None:
@@ -509,16 +517,29 @@ class ImageFileV1(AbstractImageFile):
 
     @override
     def _build_manifest(self) -> None:
-        def _gen_section_name(entries: list[ImageIndexEntryV1]):
+        def _gen_section_info(entries: list[ImageIndexEntryV1]):
             for i, entry in enumerate(entries):
                 if entry.is_sentinel():
                     break
                 probe_size = min(entry.size, MAGIC_PROBE_SIZE)
                 with self.path.open('rb') as f:
+                    probe_mime: str
+                    probe_ext: str
+
                     f.seek(entry.offset)
-                    probe_data = f.read(probe_size)
-                    probe_result: str = guess_extension(probe_data) or 'bin'
-                yield f'sections/{i:08x}.{probe_result}'
+                    if entry.size == 0:
+                        probe_mime = 'inode/x-empty'
+                        probe_ext = 'bin'
+                    else:
+                        probe_data = f.read(probe_size)
+                        probe_result = guess(probe_data)
+                        if probe_result is None:
+                            probe_mime = 'application/octet-stream'
+                            probe_ext = 'bin'
+                        else:
+                            probe_mime = probe_result.mime
+                            probe_ext = probe_result.extension
+                yield f'sections/{i:08x}.{probe_ext}', probe_mime
 
         # Alignment value by definition must be integer multiples of every data offset value.
         # If there's only one data entry, disable alignment.
@@ -529,10 +550,12 @@ class ImageFileV1(AbstractImageFile):
             if align == 0:
                 align = 1
 
+        section_info = tuple(_gen_section_info(self.index_v1.entries))
         sections: list[ImageManifestSection] = [
-            ImageManifestSection(name, align=align) for name in _gen_section_name(self.index_v1.entries)
+            ImageManifestSection(name, align=align) for name, _ in section_info
         ]
 
+        self.guessed_mime = [mime for _, mime in section_info]
         self.manifest = ImageManifest(
             manifest_version=None,
             header_format_version=1,
@@ -651,6 +674,7 @@ class ImageFileV2(AbstractImageFile):
     # that depends on the rest of the object states in case it is not passed
     # on initialization. In practice this value will never be None.
     manifest: ImageManifest | MaybeNone = field(default=None)
+    guessed_mime: list[str] | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self.manifest is None:
@@ -668,14 +692,27 @@ class ImageFileV2(AbstractImageFile):
 
     @override
     def _build_manifest(self) -> None:
-        def _gen_section_name(entries: list[ImageIndexEntryV2]):
+        def _gen_section_info(entries: list[ImageIndexEntryV2]):
             for i, entry in enumerate(entries):
                 probe_size = min(entry.size, MAGIC_PROBE_SIZE)
                 with self.path.open('rb') as f:
+                    probe_mime: str
+                    probe_ext: str
+
                     f.seek(entry.offset)
-                    probe_data = f.read(probe_size)
-                    probe_result: str = guess_extension(probe_data) or 'bin'
-                yield f'sections/{i:08x}.{probe_result}'
+                    if entry.size == 0:
+                        probe_mime = 'inode/x-empty'
+                        probe_ext = 'bin'
+                    else:
+                        probe_data = f.read(probe_size)
+                        probe_result = guess(probe_data)
+                        if probe_result is None:
+                            probe_mime = 'application/octet-stream'
+                            probe_ext = 'bin'
+                        else:
+                            probe_mime = probe_result.mime
+                            probe_ext = probe_result.extension
+                yield f'sections/{i:08x}.{probe_ext}', probe_mime
 
         with self.path.open('rb') as f:
             guessed_block_size = guess_block_size_image_v2(f)
@@ -689,10 +726,12 @@ class ImageFileV2(AbstractImageFile):
             if align == 0:
                 align = 1
 
+        section_info = tuple(_gen_section_info(self.index_v2.entries))
         sections: list[ImageManifestSection] = [
-            ImageManifestSection(name, align=align) for name in _gen_section_name(self.index_v2.entries)
+            ImageManifestSection(name, align=align) for name, _ in section_info
         ]
 
+        self.guessed_mime = [mime for _, mime in section_info]
         self.manifest = ImageManifest(
             manifest_version=None,
             header_format_version=2,

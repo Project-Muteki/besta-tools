@@ -465,7 +465,7 @@ def do_gen_udev(output: Path) -> None:
     short_help='Generate zadig config files (Windows).',
     help=(
         '''
-        Generate zadig config files and place them under specified path.
+        Generate zadig device config files and place them under specified path.
 
         Download zadig from https://zadig.akeo.ie/ to use these files through
         the Device -> Load Preset Device option. This is required on Windows
@@ -484,4 +484,4 @@ def do_gen_udev(output: Path) -> None:
 )
 def do_gen_zadig(output: Path) -> None:
     generate_zadig_files(output)
-    click.echo(f'zadig config files have been generated under {output}.')
+    click.echo(f'zadig device config files have been generated under {output}.')

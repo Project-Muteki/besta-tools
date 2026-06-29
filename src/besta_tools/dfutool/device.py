@@ -143,6 +143,7 @@ def generate_udev_file(path: Path) -> None:
             udev_file.write(dev_type.emit_udev_rule())
             udev_file.write('\n')
 
+
 def generate_zadig_files(path: Path) -> None:
     path.mkdir(exist_ok=True)
 

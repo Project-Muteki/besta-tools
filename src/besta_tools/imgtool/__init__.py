@@ -1,4 +1,10 @@
 from __future__ import annotations
+from enum import StrEnum
+
+from filetype.types import APPLICATION, ARCHIVE, AUDIO, DOCUMENT, FONT, IMAGE, VIDEO
+
+from besta_tools.common.styling import ListLabel, label_field
+from besta_tools.imgtool.filetype import FatX, Ini, Iso9660, PxBundle, UnitIni
 
 from .._version import *
 
@@ -6,7 +12,7 @@ from pathlib import Path
 import sys
 
 import click_extra as click
-from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
+from click_extra import ColorOption, NoColorOption, TableFormat, VerbosityOption, VerboseOption, QuietOption, VersionOption
 
 from .formats import (
     ImageIndexEntryV1,
@@ -16,6 +22,42 @@ from .formats import (
     construct_from_image_file,
     construct_from_manifest,
 )
+
+
+class MimeTypeTag(StrEnum):
+    APPLICATION = click.style('[APP]', fg='green', bold=True)
+    ARCHIVE = click.style('[ARC]', fg='red', bold=True)
+    AUDIO = click.style('[AUD]', fg='cyan', bold=True)
+    CONFIG = click.style('[CFG]', fg='yellow')
+    DATA = '[DAT]'
+    DOCUMENT = '[DOC]'
+    EMPTY = click.style('[NIL]', fg='bright_black')
+    FILESYSTEM = click.style('[DSK]', fg='blue', bold=True)
+    FONT = click.style('[FNT]', fg='magenta')
+    IMAGE = click.style('[IMG]', fg='magenta', bold=True)
+    VIDEO = click.style('[VID]', fg='magenta', bold=True)
+
+
+MIME_TO_TAG = {
+    'inode/x-empty': MimeTypeTag.EMPTY,
+    Ini.MIME: MimeTypeTag.CONFIG,
+    UnitIni.MIME: MimeTypeTag.CONFIG,
+    PxBundle.MIME: MimeTypeTag.ARCHIVE,
+    FatX.MIME: MimeTypeTag.FILESYSTEM,
+    Iso9660.MIME: MimeTypeTag.FILESYSTEM,
+    **{i.mime: MimeTypeTag.IMAGE for i in IMAGE},
+    **{i.mime: MimeTypeTag.VIDEO for i in VIDEO},
+    **{i.mime: MimeTypeTag.AUDIO for i in AUDIO},
+    **{i.mime: MimeTypeTag.FONT for i in FONT},
+    **{i.mime: MimeTypeTag.ARCHIVE for i in ARCHIVE},
+    **{i.mime: MimeTypeTag.APPLICATION for i in APPLICATION},
+    **{i.mime: MimeTypeTag.DOCUMENT for i in DOCUMENT},
+}
+
+
+del MIME_TO_TAG['application/octet-stream']
+# TODO have our own PE matching routines maybe
+MIME_TO_TAG['application/x-msdownload'] = MimeTypeTag.APPLICATION
 
 
 @click.group(
@@ -134,24 +176,35 @@ def do_info(image: Path):
     manifest = image_obj.manifest
     metadata = image_obj.metadata
     index = image_obj.index
+    assert image_obj.guessed_mime is not None
 
-    click.echo(f'Header Format Version: {manifest.header_format_version}')
+    click.secho(label_field('File', str(image)))
+    click.secho(label_field('Header Format Version', str(manifest.header_format_version)))
     if manifest.header_format_version == 2:
-        click.echo(f'V2 Index Format Version: 0x{manifest.index_format_version:08x}')
-    click.echo(f'Image Name: {metadata.image_name}')
+        click.secho(label_field('V2 Index Format Version', f'0x{manifest.index_format_version:08x}'))
+    click.secho(label_field('Image Name', metadata.image_name))
     if isinstance(metadata, ImageMetadataV2):
-        click.echo(f'Type: {manifest.type} (0x{metadata.image_type_key:08x})')
+        click.secho(label_field('Type', f'{manifest.type} (0x{metadata.image_type_key:08x})'))
     elif isinstance(index, ImageIndexV1):
-        click.echo(f'Type: {manifest.type} (0x{index.image_type:08x})')
-    click.echo(f'Version: {metadata.image_version}')
-    click.echo(f'Content Size: 0x{metadata.content_size:x}')
-    click.echo(f'Data Size: 0x{metadata.data_size:x}')
-    click.echo(f'Block Size: 0x{manifest.block_size:x}')
-    click.echo(f'Checksum Block Size: 0x{metadata.checksum_block_size:x}')
-    click.echo(f'Object Count: {index.count_entries()}')
+        click.secho(label_field('Type', f'{manifest.type} (0x{index.image_type:08x})'))
+    click.secho(label_field('Version', metadata.image_version))
+    click.secho(label_field('Content Size', hex(metadata.content_size)))
+    click.secho(label_field('Data Size', hex(metadata.data_size)))
+    click.secho(label_field('Block Size', hex(manifest.block_size)))
+    click.secho(label_field('Checksum Block Size', hex(metadata.checksum_block_size)))
+    click.secho(label_field('Object Count', str(index.count_entries())))
     click.echo()
-    click.echo('Objects:')
-    for entry in index.entries:
+    click.secho(ListLabel('Objects:'))
+    table_data: list[tuple[str, str, str, str]] = []
+    for i, entry in enumerate(index.entries):
         if isinstance(entry, ImageIndexEntryV1) and entry.is_sentinel():
             break
-        click.echo(f'  - Offset 0x{entry.offset:x} Size 0x{entry.size:x}')
+        mime = image_obj.guessed_mime[i]
+        table_data.append((hex(i), hex(entry.offset), hex(entry.size), f'{click.style(MIME_TO_TAG.get(mime, MimeTypeTag.DATA))} {mime}'))
+    click.print_table(
+        table_data,
+        headers=list[str](
+            ListLabel(x) for x in ('#', 'Offset', 'Size', 'Guessed MIME Type')
+        ),
+        table_format=TableFormat.ALIGNED,
+    )
