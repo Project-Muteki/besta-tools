@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 import math
 import re
 import shutil
-import sys
 
 import yaml
 

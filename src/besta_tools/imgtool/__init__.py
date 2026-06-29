@@ -201,7 +201,7 @@ def do_info(image: Path):
             break
         mime = image_obj.guessed_mime[i]
         table_data.append((hex(i), hex(entry.offset), hex(entry.size), f'{click.style(MIME_TO_TAG.get(mime, MimeTypeTag.DATA))} {mime}'))
-    click.print_table(
+    click.print_table(  # pyright: ignore[reportUnknownMemberType], kwargs is untyped
         table_data,
         headers=list[str](
             ListLabel(x) for x in ('#', 'Offset', 'Size', 'Guessed MIME Type')
