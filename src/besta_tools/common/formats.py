@@ -4,7 +4,7 @@ from typing import Any, cast, TYPE_CHECKING
 if TYPE_CHECKING:
     from construct import Context, ConstantOrContextLambda, Construct, ListContainer
 
-import dataclasses
+from dataclasses import dataclass
 from construct import (
     Check,
     Default,
@@ -22,7 +22,7 @@ def _inv_u16_per_byte(ctx: 'Context') -> int:
     return (((0x100 - hi) & 0xff) << 8) | ((0x100 - lo) & 0xff)
 
 
-@dataclasses.dataclass
+@dataclass
 class ChecksumValue(DataclassMixin):
     checksum: int = csfield(Int16ul)
     checksum_byteinv: int = csfield(Rebuild(Int16ul, _inv_u16_per_byte))

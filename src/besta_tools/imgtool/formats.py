@@ -41,7 +41,8 @@ from filetype import guess, add_type as ft_add_type
 from .filetype import TYPES
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, is_strictly_nul_terminated, div_round_up, generate_padding
+from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, div_round_up, generate_padding
+from ..common.probe import probe_image as common_probe_image, ProbeResultData, ProbeError, IMAGE_INDEX_V2_MAGIC
 
 
 for t in TYPES:
@@ -77,12 +78,9 @@ if TYPE_CHECKING:
         size: int
 
 
-IMAGE_TYPE_SYSTEM_DATA_MAGIC = 0x0001801d
-IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
-IMAGE_INDEX_V1_MAGIC = IMAGE_TYPE_SYSTEM_DATA_MAGIC.to_bytes(4, 'little')
-
 IMAGE_TYPE_MAP: dict[str, int] = {
     'system-data': 0x0001801d,
+    'system-data-2': 0x0001841d,
     'application-data': 0x00000000,
 }
 
@@ -93,10 +91,6 @@ RE_IMAGE_TYPE = re.compile(r'^(?:key:(\d+|0x[A-Fa-f0-9]+|0o[0-7]+|0b[0-1]+))$')
 MAGIC_PROBE_SIZE = 65536  # 8KiB, as per the default of filetype
 
 
-class ProbeError(RuntimeError):
-    pass
-
-
 def guess_block_size_image_v2(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> int:
     for offset in range(0, search_limit, step_size):
         f.seek(offset)
@@ -105,45 +99,11 @@ def guess_block_size_image_v2(f: BufferedReader, search_limit: int = 0x100000, s
     raise ProbeError('Cannot determine block size.')
 
 
-@dataclass
-class ProbeResult:
-    header_format_version: int
-    index_type: int
-    block_size: int
-
-
-def probe_image(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> ProbeResult:
-    header_format_version = None
-    block_size = None
-    index_type = None
-
-    f.seek(16)
-    seq1 = f.read(16)
-    seq2 = f.read(16)
-    # seq2 (os version string) can also be empty for data header format version 2
-    if is_strictly_nul_terminated(seq1) and (is_strictly_nul_terminated(seq2) or not any(seq2)):
-        header_format_version = 2
-    # seq2 will contain the first 2 checksum values so very likely they won't be NUL and will fail the test.
-    elif is_strictly_nul_terminated(seq1[:12]) and not is_strictly_nul_terminated(seq2):
-        header_format_version = 1
-    for offset in range(0, search_limit, step_size):
-        f.seek(offset)
-        marker = f.read(step_size)[:4]
-        if marker == IMAGE_INDEX_V2_MAGIC:
-            index_type = 2
-            block_size = offset
-        elif marker == IMAGE_INDEX_V1_MAGIC:
-            index_type = 1
-            block_size = offset
-
-    if header_format_version is None:
-        raise ProbeError('Cannot determine format version.')
-    if index_type is None:
-        raise ProbeError('Cannot determine index type.')
-    if block_size is None:
-        raise ProbeError('Cannot determine block size.')
-    
-    return ProbeResult(header_format_version, index_type, block_size)
+def probe_image(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> ProbeResultData:
+    result = common_probe_image(f, search_limit=search_limit, step_size=step_size)
+    if not isinstance(result, ProbeResultData):
+        raise ProbeError('Image is not a data image.')
+    return result
 
 
 def construct_from_image_file(path: str | Path) -> AbstractImageFile:

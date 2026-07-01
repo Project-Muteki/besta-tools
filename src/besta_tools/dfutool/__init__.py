@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from besta_tools.common.styling import ListLabel
+from besta_tools.dfutool.partition import scan_partition
+
 from .._version import *
 
 from contextlib import AbstractContextManager
@@ -12,7 +15,7 @@ from typing import Callable, TYPE_CHECKING, Self, cast, override
 import weakref
 
 import click_extra as click
-from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOption, QuietOption, VersionOption
+from click_extra import ColorOption, NoColorOption, TableFormat, VerbosityOption, VerboseOption, QuietOption, VersionOption
 from click._termui_impl import ProgressBar
 from click.termui import progressbar
 from usb.core import Device
@@ -409,6 +412,42 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
                 )
         else:
             click.echo('Done.')
+
+
+@app.command(
+    name='lspart',
+    short_help='Scan for and list all detected partitions.'
+)
+@click.pass_context
+def do_lspart(ctx: click.Context) -> None:
+    opts = ctx.find_object(GlobalOptions)
+    assert opts is not None
+    dfu = _pick_device(opts)
+    if dfu is None:
+        click.echo('No matching device found.')
+        sys.exit(1)
+
+    with dfu.get_dfu_lun() as lun:
+        lun.set_progress(0)
+        with lun.get_buffered_reader() as blk:
+            partitions = scan_partition(blk)
+        lun.set_progress(100)
+    click.secho(ListLabel('Installed Partitions') + ':')
+    table_data = [
+        (part.name,
+         part.type.name,
+         part.version,
+         hex(part.base_address),
+         hex(part.size)) for part in partitions
+    ]
+    click.print_table(  # pyright: ignore[reportUnknownMemberType], kwargs is untyped
+        table_data,
+        headers=list[str](
+            ListLabel(x) for x in ('Name', 'Type', 'Version', 'Base Addr.', 'Size')
+        ),
+        table_format=TableFormat.ALIGNED,
+    )
+
 
 @app.group(
     name='gen',
