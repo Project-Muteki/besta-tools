@@ -6,10 +6,9 @@ import pefile
 
 from elftools.elf import constants as elfconsts
 
-from ...common.utils import lpadding, lalign
 from ..formats import ImageBuildContext, SectionLeaf
 from ..consts import EMPTY_SECTION_HEADER, EMPTY_OPTIONAL_HEADER
-from ...common.utils import align
+from ...common.utils import align, lalign, lpadding
 
 logger = logging.getLogger('elf2bestape.steps.scan_segments')
 

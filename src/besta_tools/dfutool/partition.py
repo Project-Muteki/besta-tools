@@ -72,7 +72,7 @@ def scan_partition(blk: BufferedReader) -> list[PartitionEntry]:
             probe_result = probe_image(blk, from_here=True)
         except ProbeError:
             probe_result = None
-        print(probe_result)
+
         if isinstance(probe_result, ProbeResultKernel):
             parsed_trailer: ImageMetadataV1 | ImageMetadataV2
 
@@ -85,7 +85,6 @@ def scan_partition(blk: BufferedReader) -> list[PartitionEntry]:
             else:
                 parsed_trailer = CsImageMetadataV2.parse_stream(blk)
 
-            print(parsed_trailer)
             result.append(PartitionEntry(
                 name=parsed_trailer.image_name,
                 version=parsed_trailer.image_version,
