@@ -6,7 +6,7 @@ import pefile
 
 from elftools.elf import constants as elfconsts
 
-from ..utils import lpadding, lalign
+from ...common.utils import lpadding, lalign
 from ..formats import ImageBuildContext, SectionLeaf
 from ..consts import EMPTY_SECTION_HEADER, EMPTY_OPTIONAL_HEADER
 from ...common.utils import align

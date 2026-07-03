@@ -6,8 +6,10 @@ from __future__ import annotations
 from array import array
 from contextlib import AbstractContextManager
 from errno import EIO
+from functools import cache
+from logging import getLogger
 import time
-from typing import TYPE_CHECKING, Final, Self, cast, override
+from typing import TYPE_CHECKING, Final, NamedTuple, Self, cast, override
 from io import SEEK_CUR, SEEK_END, SEEK_SET, BufferedRandom, BufferedReader, BufferedWriter, RawIOBase
 from os import strerror
 from random import randrange
@@ -19,6 +21,7 @@ from usb.core import Device, Endpoint, Interface, USBError
 from usb.util import CTRL_IN, ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, find_descriptor
 from usb.legacy import CLASS_MASS_STORAGE, TYPE_CLASS
 
+from besta_tools.common.utils import align, lalign
 from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CSWError, CsBestaDfuConfigPacket, CsCBW, CsCSW, ReadCapacity10Response
 
 from .usbms_const import SCSI_CMD_INQUIRY, SCSI_CMD_READ10, SCSI_CMD_READ_CAPACITY10, SCSI_CMD_TEST_UNIT_READY, SCSI_CMD_WRITE10, SCSI_INQUIRY_HEADER_F1_RMB, SCSI_INQUIRY_PERIF_QUALIFIER_LOADED, SCSI_INQUIRY_PERIF_TYPE_DIRECT, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI, USBMS_REQ_BBB_GET_MAX_LUN
@@ -26,6 +29,9 @@ from .usbms_const import SCSI_CMD_INQUIRY, SCSI_CMD_READ10, SCSI_CMD_READ_CAPACI
 if TYPE_CHECKING:
     from _typeshed import MaybeNone, ReadableBuffer, WriteableBuffer
     from types import TracebackType
+
+
+logger = getLogger('besta_tools.dfutool.dfu')
 
 
 # Maximum bulk transfer size. Currently only used for SCSI data transfers.
@@ -597,21 +603,27 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         self.dev.close()
 
 
+class _IoPlanningResult(NamedTuple):
+    clipped_size: int
+    lba: int
+    lba_count: int
+    lpad: int
+    rpad: int
+    new_lba: int
+    new_boffset: int
+
+    @property
+    def whole(self) -> bool:
+        return self.lpad == 0 and self.rpad == 0
+
+
 class DfuIo(RawIOBase):
     '''
     RawIO wrapper for a DFU LUN object.
 
-    The I/O will generally stop at the LBA size boundary of the LUN. That is,
-    it can be one of the following:
-    - If the amount of requested data perfectly aligns with LBA
-      (_boffset == 0, size aligns with LBA size), just read and return.
-    - If the amount of requested data is less than a LBA (_boffset + size is
-      less than a LBA), read and truncate the data, update _boffset
-      accordingly.
-    - If the amount of requested data is more than or equal to a LBA
-      (_boffset + size is more than or equal to a LBA), read data only up
-      to the closest LBA (e.g. if _boffset is 3, _lbasize is 512 and size
-      is 8192, only return the last 8192 - 3 = 8189 bytes read).
+    The I/O requests will be converted to LBA with the appropriate amount of
+    padding. The class does not try to cache any block so it's better to avoid
+    random unaligned I/O if possible, as this will induce performance penalty.
     '''
 
     _lun: Lun
@@ -633,33 +645,74 @@ class DfuIo(RawIOBase):
         if self.closed:
             raise ValueError(f'I/O operation on closed I/O object')
 
-    def _plan_io(self, size: int) -> tuple[int, int, int, int]:
-        '''
-        Plan I/O operation, taking the current LBA byte offset into account.
-
-        Returns the number of blocks to read/write and the right buffer trim
-        offset.
-        '''
+    def _plan_io(self, size: int) -> _IoPlanningResult:
         boffset = self._boffset
         lbasize = self._lbasize
         lba = self._lba
 
-        # Limit size to be within the boundary of remaining data.
-        total_size = self._lun.capacity.size_bytes
-        current_offset = lba * lbasize + boffset
-        size = min(size, max(0, total_size - current_offset))
+        logger.debug('planio2: lba %d+%d blksize %d', lba, boffset, lbasize)
 
-        new_lba, new_boffset = divmod(current_offset + size, lbasize)
+        # Limit I/O size (inner block) to be within the boundary of remaining data.
+        max_roffset = self._lun.capacity.size_bytes
+        loffset = lba * lbasize + boffset
+        size = min(size, max(0, max_roffset - loffset))
+        roffset = loffset + size
+        logger.debug(
+            'planio2: inner block after clipping to device capacity: (%d, %d)',
+            loffset,
+            roffset,
+        )
 
-        if lba == new_lba:
-            # Same block, truncate
-            return 1, new_boffset, new_lba, new_boffset
-        elif new_lba - lba == 1 and new_boffset == 0:
-            # Same block, do not truncate the right side
-            return 1, lbasize if boffset != 0 else 0, new_lba, new_boffset
-        else:
-            # Cut-off the partial block I/O within the multi-block I/O
-            return new_lba - lba, 0, new_lba, 0
+        # Start offset needs to align with 4k boundary, or devices with
+        # NAND-backed storage may return skewed data (data that live at a
+        # different base than the requested one).
+        clipped_size = size
+        outer_loffset = lalign(loffset, 4096)
+        outer_roffset = align(roffset, lbasize)
+        outer_block_size = outer_roffset - outer_loffset
+        logger.debug(
+            'planio2: outer block: (%d, %d)',
+            outer_loffset,
+            outer_roffset,
+        )
+
+        # Cap outer block size to max size to avoid overflowing.
+        if outer_block_size > MAX_BULK_XFER_SIZE:
+            outer_block_size = MAX_BULK_XFER_SIZE
+            outer_roffset = outer_loffset + outer_block_size
+            clipped_size = outer_roffset - loffset
+            # This should clip into the inner block now
+            assert clipped_size < size
+            roffset = loffset + clipped_size
+            logger.debug(
+                'planio2: outer block is larger than MAX_BULK_XFER_SIZE, ' +
+                'clipping to (%d, %d)',
+                outer_loffset,
+                outer_roffset,
+            )
+            logger.debug('new inner block: (%d, %d)', loffset, roffset)
+
+        assert (outer_roffset - outer_loffset) % lbasize == 0
+
+        start_lba = outer_loffset // lbasize
+        lpad = loffset - outer_loffset
+        rpad = outer_roffset - roffset
+        lba_count = (outer_roffset - outer_loffset) // lbasize
+
+        assert lpad >= 0
+        assert rpad >= 0
+
+        new_lba, new_boffset = divmod(roffset, lbasize)
+
+        return _IoPlanningResult(
+            clipped_size,
+            start_lba,
+            lba_count,
+            lpad,
+            rpad,
+            new_lba,
+            new_boffset,
+        )
 
     def _tell(self) -> int:
         '''
@@ -684,7 +737,9 @@ class DfuIo(RawIOBase):
         '''
         self._check_closed()
 
-        if size < 0 or size > MAX_BULK_XFER_SIZE:
+        logger.debug('%s read(%d)', repr(self), size)
+        logger.debug('before lba %d+%d blksize %d', self._lba, self._boffset, self._lbasize)
+        if size < 0:
             size = MAX_BULK_XFER_SIZE
         elif size == 0:
             return b''
@@ -694,17 +749,18 @@ class DfuIo(RawIOBase):
         if max_lba < lba:
             return b''
 
-        ltrim = self._boffset
-        blks, rtrim, new_lba, new_boffset = self._plan_io(size)
+        plan = self._plan_io(size)
+        logger.debug('%s', repr(plan))
 
-        res, data = self._lun.scsi_read10(lba, blks, tag=self._tag)
+        res, data = self._lun.scsi_read10(plan.lba, plan.lba_count, tag=self._tag)
         if res.bCSWStatus != 0:
             raise IOError(EIO, strerror(EIO))
 
-        if ltrim != 0 or rtrim != 0:
-            data = data[ltrim:rtrim] if rtrim != 0 else data[ltrim:]
-        self._lba, self._boffset = new_lba, new_boffset
+        if not plan.whole:
+            data = data[plan.lpad:len(data)-plan.rpad]
+        self._lba, self._boffset = plan.new_lba, plan.new_boffset
 
+        logger.debug('after lba %d+%d blksize %d', self._lba, self._boffset, self._lbasize)
         return data
 
     @override
@@ -719,8 +775,18 @@ class DfuIo(RawIOBase):
     def write(self, b: ReadableBuffer, /) -> int | MaybeNone:
         self._check_closed()
 
+        # We use this to cheat our way through so we don't need to spend time
+        # checking whether the lpad and rpad are on the same lba, and act
+        # appropriately.
+        _read10 = self._lun.scsi_read10
+        @cache
+        def _read10_cached(lba: int, blks: int) -> tuple[CSW, bytes]:
+            return _read10(lba, blks)
+
         mv = memoryview(b)
         size = len(mv)
+        logger.debug('%s write(...[%d])', repr(self), size)
+        logger.debug('before lba %d+%d blksize %d', self._lba, self._boffset, self._lbasize)
 
         if size > MAX_BULK_XFER_SIZE:
             size = MAX_BULK_XFER_SIZE
@@ -732,48 +798,46 @@ class DfuIo(RawIOBase):
         if max_lba < lba:
             return 0
 
-        lpad = self._boffset
-        blks, rpad, new_lba, new_boffset = self._plan_io(size)
-        #print(blks, rpad, new_lba, new_boffset)
+        plan = self._plan_io(size)
+        logger.debug('%s', repr(plan))
 
-        written: int
+        written: int = plan.clipped_size
         wbuf: memoryview | bytearray
-        if lpad == 0 and rpad == 0:
-            written = blks * self._lbasize
+        if plan.whole:
             wbuf = mv[:written]
-            #print('whole lba', lba, 'data', mv[:written].hex())
-        elif rpad != 0:
-            res, data = self._lun.scsi_read10(lba, 1, tag=self._tag)
-            if res.bCSWStatus != 0:
-                raise IOError(EIO, strerror(EIO))
-            data_a = bytearray(data)
-            data_a[lpad:rpad] = mv[:rpad - lpad]
-            assert len(data_a) % self._lbasize == 0
-            wbuf = data_a
-            #print('single lba', lba, 'data', data_a.hex())
-            written = rpad - lpad
+            logger.debug('whole lba %d data %s', plan.lba, repr(wbuf.hex()))
         else:
-            res, data = self._lun.scsi_read10(lba, 1, tag=self._tag)
-            if res.bCSWStatus != 0:
-                raise IOError(EIO, strerror(EIO))
-            data_a = bytearray()
-            written = blks * self._lbasize - lpad
-            data_a.extend(data[:lpad])
-            data_a.extend(mv[:written])
-            assert len(data_a) % self._lbasize == 0
-            wbuf = data_a
-            #print('multiple lba', lba, 'data', data_a.hex())
+            wbuf = bytearray(plan.lba_count * self._lbasize)
 
-        res = self._lun.scsi_write10(lba, bytes(wbuf), tag=self._tag)
+            if plan.lpad != 0:
+                res, overlap_buf = _read10_cached(plan.lba, 1, tag=self._tag)
+                if res.bCSWStatus != 0:
+                    raise IOError(EIO, strerror(EIO))
+                wbuf[:plan.lpad] = overlap_buf[:plan.lpad]
+
+            wbuf[plan.lpad:len(wbuf)-plan.rpad] = mv[:written]
+
+            if plan.rpad != 0:
+                res, overlap_buf = _read10_cached(plan.lba + plan.lba_count - 1, 1, tag=self._tag)
+                if res.bCSWStatus != 0:
+                    raise IOError(EIO, strerror(EIO))
+                wbuf[-plan.rpad:] = overlap_buf[-plan.rpad:]
+
+            logger.debug('unaligned lba %d data %s', plan.lba, repr(wbuf.hex()))
+
+        res = self._lun.scsi_write10(plan.lba, bytes(wbuf), tag=self._tag)
         if res.bCSWStatus != 0:
-           raise IOError(EIO, strerror(EIO))
+            raise IOError(EIO, strerror(EIO))
 
-        self._lba, self._boffset = new_lba, new_boffset
+        self._lba, self._boffset = plan.new_lba, plan.new_boffset
+        logger.debug('after lba %d+%d blksize %d', self._lba, self._boffset, self._lbasize)
         return written
 
     @override
     def seek(self, offset: int, whence: int = SEEK_SET, /) -> int:
         self._check_closed()
+
+        logger.debug('%s seek(%d, %d)', self, offset, whence)
 
         blksize = self._lbasize
 
@@ -788,6 +852,7 @@ class DfuIo(RawIOBase):
         else:
             raise ValueError(f'Unsupported whence {whence}')
 
+        logger.debug('lba %d+%d blksize %d', self._lba, self._boffset, self._lbasize)
         return self._tell()
 
     @override

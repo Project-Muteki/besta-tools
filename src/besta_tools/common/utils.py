@@ -194,7 +194,50 @@ def is_strictly_nul_terminated(buf: bytes | bytearray | memoryview) -> bool:
 
 
 def align(pos: int, blksize: int, greedy: bool = False) -> int:
+    '''
+    Align `pos` to `blksize` the right. If `greedy` is `True`, insert an extra
+    block even when not needed.
+
+    >>> align(4097, 4096)
+    8192
+    >>> align(4096, 4096)
+    4096
+    >>> align(4096, 4096, greedy=True)
+    8192
+    '''
     return (pos // blksize * blksize) + (blksize if greedy or pos % blksize != 0 else 0)
+
+
+def lalign(pos: int, blksize: int) -> int:
+    '''
+    Align `pos` to `blksize` to the left.
+
+    >>> lalign(4097, 4096)
+    4096
+    '''
+    return pos // blksize * blksize
+
+
+def lpadding(pos: int, blksize: int) -> int:
+    '''
+    Return the number of bytes that needs to be inserted to the left side of
+    `pos` to align it to `blksize`.
+
+    >>> lpadding(4097, 4096)
+    1
+    '''
+    return pos - (pos // blksize * blksize)
+
+
+def padding(pos: int, blksize: int) -> int:
+    '''
+    Return the number of bytes that needs to be inserted to the right side of
+    `pos` to align it to `blksize`.
+
+    >>> lpadding(4097, 4096)
+    4095
+    '''
+    return align(pos, blksize) - pos
 
 
 def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: int | None = None) -> bytes:

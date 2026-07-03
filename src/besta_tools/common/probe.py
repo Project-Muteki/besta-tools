@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from io import SEEK_CUR, BufferedReader
+from logging import getLogger
 from typing import Self
 
 from besta_tools.common.utils import is_strictly_nul_terminated
 
+
+logger = getLogger('besta_tools.common.probe')
 
 IMAGE_TYPE_SYSTEM_DATA_MAGIC = 0x0001801d
 IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
@@ -71,10 +74,13 @@ class ProbeResultData:
 
 
 def _test_format_version(f: BufferedReader, base_offset: int) -> int | None:
+    logger.debug('_test_format_version @ %s', hex(base_offset))
+
     f.seek(base_offset + 16)
 
     seq1 = f.read(16)
     seq2 = f.read(16)
+    logger.debug('seq1=%s, seq2=%s', seq1.hex(), seq2.hex())
 
     if len(seq1) < 16 or len(seq2) < 16:
         raise ProbeError('Header too small to be an image file.')
@@ -108,8 +114,11 @@ def _test_kernel_format_version(
 
     if limit < step_size or limit % step_size != 0:
         return None
-    
+
     for diff in range(0, limit, step_size):
+        # TODO: Backseeking invalidates cache and overwhelms the dumb buffered
+        # IO adapter that is used to access the DFU virtual block device.
+        # Optimize it by reading the entire thing.
         offset = base_offset + kernel_size - diff - 0x500
         trailer_version = _test_format_version(f, offset)
         if trailer_version is not None:
@@ -120,7 +129,7 @@ def _test_kernel_format_version(
 
 def probe_image(
     f: BufferedReader,
-    search_limit: int = 0x100000,
+    search_limit: int = 8192,
     jump_limit: int = 0x1000000,
     step_size: int = 16,
     from_here: bool = False,
@@ -136,30 +145,38 @@ def probe_image(
     base_offset = f.seek(0, SEEK_CUR) if from_here else 0
 
     header_format_version = _test_format_version(f, base_offset)
+    logger.debug('Detected data header format version is %s.', str(header_format_version))
 
     if header_format_version is None:
         # Detect kernel image
+        logger.debug('Image is not data. Trying to look for kernel...')
         res = _test_kernel_format_version(f, base_offset, search_limit, jump_limit, step_size)
         if res is not None:
             trailer_format_version, trailer_offset = res
+            logger.debug('Kernel trailer v%d detected at %s', trailer_format_version, hex(trailer_offset))
             f.seek(base_offset + 0x14)
             arch = KernelArch.from_bytes(f.read(4))
             soc = SocType.from_bytes(f.read(4))
             if arch == KernelArch.UNSET and soc == SocType.UNSET:
+                logger.debug('Kernel arch info is NOT present')
                 header_format_version = 1
             else:
+                logger.debug('Kernel arch info is present')
                 header_format_version = 2
             return ProbeResultKernel(header_format_version, trailer_format_version, trailer_offset, arch, soc)
         else:
             raise ProbeError('Cannot determine format version.')
 
+    logger.debug('Searching for index magic...')
     for offset in range(0, search_limit, step_size):
         f.seek(base_offset + offset)
         marker = f.read(step_size)[:4]
         if marker == IMAGE_INDEX_V2_MAGIC:
+            logger.debug('Index V2 magic found.')
             index_type = 2
             block_size = offset
         elif marker == IMAGE_INDEX_V1_MAGIC:
+            logger.debug('Index V1 magic found.')
             index_type = 1
             block_size = offset
 

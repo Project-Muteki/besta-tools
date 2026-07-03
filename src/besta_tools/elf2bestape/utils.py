@@ -21,11 +21,6 @@ def pefile_struct_from_dict(format_: PEStructureDefinition,
     pe_struct.__dict__.update(data)
     return pe_struct
 
-def lalign(pos: int, blksize: int) -> int:
-    return pos // blksize * blksize
-
-def lpadding(pos: int, blksize: int) -> int:
-    return pos - (pos // blksize * blksize)
 
 def get_executable_segment(elf: ELFFile) -> int:
     for idx, seg in enumerate(elf.iter_segments()):
