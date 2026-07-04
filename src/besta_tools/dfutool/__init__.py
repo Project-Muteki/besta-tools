@@ -428,10 +428,14 @@ def do_lspart(ctx: click.Context) -> None:
         sys.exit(1)
 
     with dfu.get_dfu_lun() as lun:
+        if not lun.ping():
+            click.echo('ERROR: Device did not respond to DFU ping.')
+            sys.exit(1)
         lun.set_progress(0)
         with lun.get_buffered_reader() as blk:
             partitions = scan_partition(blk)
         lun.set_progress(100)
+
     click.secho(ListLabel('Installed Partitions') + ':')
     table_data = [
         (part.name,
