@@ -22,7 +22,7 @@ from usb.util import CTRL_IN, ENDPOINT_IN, ENDPOINT_OUT, endpoint_direction, fin
 from usb.legacy import CLASS_MASS_STORAGE, TYPE_CLASS
 
 from besta_tools.common.utils import align, lalign
-from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CSWError, CsBestaDfuConfigPacket, CsCBW, CsCSW, ReadCapacity10Response
+from besta_tools.dfutool.formats import CBW, CSW, BestaDfuCommand, BestaDfuConfigPacket, BestaDfuSbcOpcode, CsBestaDfuConfigPacket, CsCBW, CsCSW, ReadCapacity10Response
 
 from .usbms_const import SCSI_CMD_INQUIRY, SCSI_CMD_READ10, SCSI_CMD_READ_CAPACITY10, SCSI_CMD_TEST_UNIT_READY, SCSI_CMD_WRITE10, SCSI_INQUIRY_HEADER_F1_RMB, SCSI_INQUIRY_PERIF_QUALIFIER_LOADED, SCSI_INQUIRY_PERIF_TYPE_DIRECT, USB_INTERFACE_PROTOCOL_BBB, USB_INTERFACE_SUBCLASS_SCSI, USBMS_REQ_BBB_GET_MAX_LUN
 
@@ -222,10 +222,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         for _ in range(10):
             try:
                 ret, inquiry = self.scsi_inquiry(36)
-                if ret.bCSWStatus != 0:
+                if not ret.check_bool():
                     continue
                 ret = self.scsi_test_unit_ready()
-                if ret.bCSWStatus != 0:
+                if not ret.check_bool():
                     continue
                 self._inquiry_result = inquiry
                 ready = True
@@ -504,22 +504,20 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
         '''
         try:
             ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG)
-            if ret.bCSWStatus != 0:
-                print('SET_CONFIG bCSWStatus error', ret)
+            if not ret.check_bool():
                 return False
 
             ret, res = self.scsi_besta_get_config()
-            if ret.bCSWStatus != 0:
-                print('GET_CONFIG bCSWStatus error', ret)
+            if not ret.check_bool():
                 return False
 
             if self.besta_check_ack(res, BestaDfuCommand.CMD_PING, BestaDfuCommand.CMD_PING_ARG):
                 return True
             else:
-                print('NACK', res)
+                logger.error('NACK %s', repr(res))
                 return False
-        except USBError as e:
-            print(f'USB error: {e}')
+        except USBError:
+            logger.exception(f'USB error')
             return False
 
     def set_progress(self, value: int) -> None:
@@ -531,12 +529,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             raise ValueError('Value must be between 0 and 100.')
 
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_SET_PROGRESS, value)
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         ret, res = self.scsi_besta_get_config()
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         if not self.besta_check_ack(res, BestaDfuCommand.CMD_SET_PROGRESS):
             raise BestaNACK('Device NACKed the DFU request.')
@@ -549,12 +545,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             raise ValueError('Region must be between 0 and 2')
 
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_PROBE_REGION, region)
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         ret, res = self.scsi_besta_get_config()
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         if not self.besta_check_ack(res, BestaDfuCommand.CMD_PROBE_REGION):
             raise BestaNACK('Device NACKed the DFU request.')
@@ -578,12 +572,10 @@ class Lun(AbstractContextManager):  # pyright: ignore[reportMissingTypeArgument]
             raise ValueError('Region must be between 0 and 2')
 
         ret = self.scsi_besta_set_config(BestaDfuCommand.CMD_ERASE_AND_SCAN, region)
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         ret, res = self.scsi_besta_get_config()
-        if ret.bCSWStatus != 0:
-            raise CSWError(ret.bCSWStatus)
+        ret.check()
 
         if not self.besta_check_ack(res, BestaDfuCommand.CMD_ERASE_AND_SCAN):
             raise BestaNACK('Device NACKed the DFU request.')

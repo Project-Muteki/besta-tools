@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from logging import getLogger
 from typing import NamedTuple, Self, override
 
 from construct import (
@@ -20,6 +21,9 @@ from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFla
 from .usbms_const import *
 
 
+logger = getLogger('besta_tools.dfutool.dfu')
+
+
 class CSWError(RuntimeError):
     STATUS_MAP: dict[int, str] = {
         0: 'Command passed',
@@ -27,14 +31,20 @@ class CSWError(RuntimeError):
         2: 'Phase error',
     }
     status: int
+    residue: int
+    tag_mismatch: bool
 
-    def __init__(self, status: int, *args: object) -> None:
+    def __init__(self, status: int, residue: int = 0, tag_mismatch: bool = False, *args: object) -> None:
         super().__init__(*args)
         self.status = status
+        self.residue = residue
+        self.tag_mismatch = tag_mismatch
 
     @override
     def __str__(self) -> str:
-        return f'[bCSWStatus={self.status}] {self.STATUS_MAP.get(self.status, '')}'
+        residue_str = f' ({self.residue} bytes short)' if self.residue != 0 else ''
+        tag_str = f' (tag mismatch)' if self.tag_mismatch else ''
+        return f'[bCSWStatus={self.status}] {self.STATUS_MAP.get(self.status, '')}{residue_str}{tag_str}'
 
 
 class BestaDfuSbcOpcode(IntEnum):
@@ -77,6 +87,24 @@ class CSW(DataclassMixin):
     dCSWTag: int = csfield(Int32ul)
     dCSWDataResidue: int = csfield(Int32ul)
     bCSWStatus: int = csfield(Int8ul)
+
+    def check(self, tag: int = 0) -> None:
+        # dfu.py routines will usually xor the tag with the expected one so
+        # checking with 0 will work in most cases.
+        tag_mismatch = False
+        if self.dCSWTag != tag:
+            tag_mismatch = True
+
+        if tag_mismatch or self.dCSWDataResidue != 0 or self.bCSWStatus != 0:
+            raise CSWError(self.bCSWStatus, self.dCSWDataResidue, tag_mismatch)
+
+    def check_bool(self, tag: int = 0) -> bool:
+        try:
+            self.check(tag)
+        except CSWError as e:
+            logger.error('%s', str(e))
+            return False
+        return True
 
 
 CsCSW = DataclassStruct(CSW)
