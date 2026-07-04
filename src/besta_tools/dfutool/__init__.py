@@ -416,7 +416,14 @@ def do_write(ctx: click.Context, input_: BufferedReader, start_address: int, num
 
 @app.command(
     name='lspart',
-    short_help='Scan for and list all detected partitions.'
+    short_help='Scan for and list all detected partitions.',
+    help=(
+        '''
+        Scan for and list all detected partitions. Currently it supports
+        detecting the kernel, system data and application data (V2)
+        partitions.
+        '''
+    ),
 )
 @click.pass_context
 def do_lspart(ctx: click.Context) -> None:
