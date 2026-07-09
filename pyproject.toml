@@ -39,6 +39,10 @@ dev = [
     "mypy (>=1.17.1)",
     "filetype-stubs @ git+https://github.com/Project-Muteki/filetype-stubs.git",
 ]
+test = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "pytest-timeout (>=2.4.0,<3.0.0)"
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
