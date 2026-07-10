@@ -2,14 +2,16 @@
 Besta-flavored LZW.
 
 This is basically an implementation of the GIF variant of LZW with input bit
-width hardcode to 8, because that's what Besta uses for their encoder.
+width hardcoded to 8, because that's what Besta uses for their encoder.
 
 The API is somewhat inspired by python-lzw.
 '''
+
 from collections.abc import Generator, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum, auto
 from io import BufferedIOBase
+from itertools import chain
 from logging import getLogger
 from typing import Final, Self, override
 
@@ -126,6 +128,95 @@ class CodePointInfo:
             return cls(kind=CodePointKind.EOI, point=0)
         else:
             return cls(kind=CodePointKind.DIC, point=code - CODE_DIC_BASE)
+
+
+@dataclass
+class Stats:
+    num_input_units: int = 0
+    num_output_units: int = 0
+    num_streams: int = 0
+
+
+class Decoder(Iterator[bytes]):
+    '''
+    Proxy to the iterator interface of decode_bitstream, that also allows easy
+    statistics access.
+    '''
+    _stats: Stats
+    _bitstream: Iterable[CodePoint]
+    _it: Iterator[bytes]
+
+    @property
+    def num_code_read(self) -> int:
+        return self._stats.num_input_units
+
+    @property
+    def num_bytes_written(self) -> int:
+        return self._stats.num_output_units
+
+    @property
+    def num_streams(self) -> int:
+        return self._stats.num_streams
+
+    @override
+    def __str__(self) -> str:
+        return (
+            self.__class__.__name__ +
+            f'(num_code_read={self.num_code_read}, ' +
+            f'num_bytes_written={self.num_bytes_written}, ' +
+            f'num_streams={self.num_streams})'
+        )
+
+    def __init__(self, bitstream: Iterable[CodePoint]) -> None:
+        self._bitstream = bitstream
+        self._stats = Stats()
+
+        self._it = decode_bitstream(self._bitstream, self._stats)
+
+    @override
+    def __next__(self) -> bytes:
+        return next(self._it)
+
+
+class Encoder(Iterator[CodePoint]):
+    '''
+    Proxy to the iterator interface of encode_bitstream, that also allows easy
+    statistics access.
+    '''
+    _stats: Stats
+    _bytestream: Iterable[bytes]
+    _it: Iterator[CodePoint]
+
+    @property
+    def num_bytes_read(self) -> int:
+        return self._stats.num_input_units
+
+    @property
+    def num_code_written(self) -> int:
+        return self._stats.num_output_units
+
+    @property
+    def num_streams(self) -> int:
+        return self._stats.num_streams
+
+    @override
+    def __str__(self) -> str:
+        return (
+            self.__class__.__name__ +
+            f'(num_bytes_read={self.num_bytes_read}, ' +
+            f'num_code_written={self.num_code_written}, ' +
+            f'num_streams={self.num_streams})'
+        )
+
+    def __init__(self, bytestream: Iterable[bytes]) -> None:
+        self._bytestream = bytestream
+        self._stats = Stats()
+
+        self._it = encode_bitstream(self._bytestream, self._stats)
+
+    @override
+    def __next__(self) -> CodePoint:
+        return next(self._it)
 
 
 class BitstreamReader(Iterator[CodePoint]):
@@ -327,95 +418,6 @@ class BitstreamWriter:
         return enc
 
 
-@dataclass
-class Stats:
-    num_input_units: int = 0
-    num_output_units: int = 0
-    num_streams: int = 0
-
-
-class Decoder(Iterator[bytes]):
-    '''
-    Proxy to the iterator interface of decode_bitstream, that also allows easy
-    statistics access.
-    '''
-    _stats: Stats
-    _bitstream: Iterable[CodePoint]
-    _it: Iterator[bytes]
-
-    @property
-    def num_code_read(self) -> int:
-        return self._stats.num_input_units
-
-    @property
-    def num_bytes_written(self) -> int:
-        return self._stats.num_output_units
-
-    @property
-    def num_streams(self) -> int:
-        return self._stats.num_streams
-
-    @override
-    def __str__(self) -> str:
-        return (
-            self.__class__.__name__ +
-            f'(num_code_read={self.num_code_read}, ' +
-            f'num_bytes_written={self.num_bytes_written}, ' +
-            f'num_streams={self.num_streams})'
-        )
-
-    def __init__(self, bitstream: Iterable[CodePoint]) -> None:
-        self._bitstream = bitstream
-        self._stats = Stats()
-
-        self._it = decode_bitstream(self._bitstream, self._stats)
-
-    @override
-    def __next__(self) -> bytes:
-        return next(self._it)
-
-
-class Encoder(Iterator[CodePoint]):
-    '''
-    Proxy to the iterator interface of encode_bitstream, that also allows easy
-    statistics access.
-    '''
-    _stats: Stats
-    _bytestream: Iterable[bytes]
-    _it: Iterator[CodePoint]
-
-    @property
-    def num_bytes_read(self) -> int:
-        return self._stats.num_input_units
-
-    @property
-    def num_code_written(self) -> int:
-        return self._stats.num_output_units
-
-    @property
-    def num_streams(self) -> int:
-        return self._stats.num_streams
-
-    @override
-    def __str__(self) -> str:
-        return (
-            self.__class__.__name__ +
-            f'(num_bytes_read={self.num_bytes_read}, ' +
-            f'num_code_written={self.num_code_written}, ' +
-            f'num_streams={self.num_streams})'
-        )
-
-    def __init__(self, bytestream: Iterable[bytes]) -> None:
-        self._bytestream = bytestream
-        self._stats = Stats()
-
-        self._it = encode_bitstream(self._bytestream, self._stats)
-
-    @override
-    def __next__(self) -> CodePoint:
-        return next(self._it)
-
-
 def decode_bitstream(bitstream: Iterable[CodePoint], stats: Stats | None = None) -> Generator[bytes]:
     '''
     Decode a Sequence or an Iterable of LZW code points into phrases.
@@ -489,9 +491,6 @@ def encode_bitstream(bytestream: Iterable[bytes], stats: Stats | None = None) ->
     Greedily find the longest phrases in a Sequence or an Iterable of bytes and
     encode them into a series of LZW code points.
     '''
-    def _chain(bytestream: Iterable[bytes]) -> Generator[int]:
-        for byt in bytestream:
-            yield from byt
 
     prefix: bytes
     dic: dict[bytes, int] = {}
@@ -504,7 +503,7 @@ def encode_bitstream(bytestream: Iterable[bytes], stats: Stats | None = None) ->
     def _next_code() -> int:
         return len(dic) + CODE_DIC_BASE
 
-    byteit = _chain(bytestream)
+    byteit = chain.from_iterable(bytestream)
     try:
         prefix = lit[next(byteit)]
         ni += 1

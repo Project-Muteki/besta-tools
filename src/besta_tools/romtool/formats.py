@@ -2,9 +2,10 @@ import dataclasses
 import datetime
 
 from construct import Byte, Const, Default, Int16ul, Int32ul
-from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, FlagsEnumBase, TFlagsEnum, csfield
+from construct_typed import DataclassMixin, DataclassStruct, csfield
 
 from ..common.formats import ArrayDefault, CsChecksumValue, ChecksumValue
+from ..common.tenum_patched import EnumBase, TEnum, FlagsEnumBase, TFlagsEnum
 
 
 class RomType(FlagsEnumBase):

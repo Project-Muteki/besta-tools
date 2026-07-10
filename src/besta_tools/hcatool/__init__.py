@@ -6,15 +6,15 @@ from click_extra import ColorOption, NoColorOption, VerbosityOption, VerboseOpti
     name='hcatool',
     help=(
         '''
-        Parse and build Besta's Highly Compressed Animation (HCA) files.
+        Parse and build Besta's High-Compressed Animation (HCA) files.
 
         This was the primary image format used by the Besta GUI subsystem,
         before they switched to PNGs for more powerful devices later.
-        It is however still used in many occasions for simple animations and
-        illustrations in .ebook format.
+        It is however still used in many occasions for simple animations,
+        illustrations in .ebook format, etc.
 
-        It is a format similar to GIF, but optimized for fast rendering on
-        low-powered hardware.
+        The format is possibly inspired by GIF, but optimized for fast
+        rendering on low-powered hardware rather than size and flexibility.
         '''
     ),
     params=[

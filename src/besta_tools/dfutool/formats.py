@@ -16,8 +16,9 @@ from construct import (
     len_,
     this,
 )
-from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFlagsEnum, csfield
+from construct_typed import DataclassMixin, DataclassStruct, csfield
 
+from ..common.tenum_patched import FlagsEnumBase, TFlagsEnum
 from .usbms_const import *
 
 
