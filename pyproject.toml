@@ -31,6 +31,7 @@ titlemgr = 'besta_tools.titlemgr:app'
 romtool = 'besta_tools.romtool:app'
 imgtool = 'besta_tools.imgtool:app'
 dfutool = 'besta_tools.dfutool:app'
+hcatool = 'besta_tools.hcatool:app'
 
 [dependency-groups]
 dev = [

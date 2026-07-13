@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Self, cast, override
 
-from construct import Array, Bytes, Check, Computed, Const, Default, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, len_, this
+from construct import Array, Bytes, Check, Computed, Const, Default, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, ValidationError, len_, this
 from construct_typed import DataclassMixin, DataclassStruct, csfield
+
+from besta_tools.common.utils import align
 
 from ..common.tenum_patched import EnumBase, TEnum
 
@@ -108,12 +110,13 @@ CsHcaPalette8Bpp = DataclassStruct(HcaPalette8Bpp)
 
 @dataclass
 class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
+    len_: int = csfield(cast('Computed[int]', Computed(this._.palette_size)))
     color: list[int] = csfield(Array(16 * 16, Int32ul))
 
     @property
     @override
     def size(self) -> int:
-        return 16
+        return self.len_
 
     @classmethod
     @override
@@ -122,11 +125,11 @@ class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
             raise ValueError('Palette must have no more than 16 entries.')
         sparse = dict(enumerate(rgb12s))
 
-        return cls(color=[sparse.get(x, 0) << 12 | sparse.get(y, 0) for x in range(16) for y in range(16)])
+        return cls(len_=len(rgb12s), color=[sparse.get(x, 0) << 12 | sparse.get(y, 0) for x in range(16) for y in range(16)])
 
     @override
     def to_rgb12(self) -> list[int]:
-        return [(c >> 12) & 0xfff for c in islice(self.color, 16)]
+        return [(c >> 12) & 0xfff for c in islice(self.color, self.len_)]
 
 
 CsHcaPalette4Bpp = DataclassStruct(HcaPalette4Bpp)
@@ -161,7 +164,7 @@ CsHcaPaletteDummy = DataclassStruct(HcaPaletteDummy)
 class HcaFrameHeader(DataclassMixin):
     frame_type: FrameType = csfield(CsFrameType)
     seq: int = csfield( Int16ul)
-    _sbz_0x4: int | None = csfield(Const(0, Int32ul))
+    lpadding: int = csfield(Int32ul)
     _sbz_0x8: int | None = csfield(Const(0, Int8ul))
     _padding: bytes | None = csfield(Default(Bytes(3), b'\x00\x00\x00'))
 
@@ -214,6 +217,16 @@ def rebuild_hca_frame_offsets(ctx: 'Context') -> list[int]:
     return result
 
 
+def rebuild_8bpp_palette_length(ctx: 'Context') -> int:
+    len_ = len(ctx.palette.color_even)
+    if len_ > 256:
+        raise ValidationError('8Bpp palette size cannot exceed 256 entries.')
+    if len_ == 256:
+        return 0
+    else:
+        return len_
+
+
 @dataclass
 class Hca(DataclassMixin):
     magic: bytes = csfield(Const(b'HCA'))
@@ -222,13 +235,24 @@ class Hca(DataclassMixin):
     width: int = csfield(Int16ul)
     nframes: int = csfield(Rebuild(Int8ul, len_(this.frames)))
     # TODO: Somehow type of Switch didn't get automatically detected.
-    palette_size: int = csfield(cast(
+    raw_palette_size: int = csfield(cast(
         'Switch[int, int]',
         Switch(this.pixel_format, {
-            PixelFormat.P4: Rebuild(Int8ul, 16),
-            PixelFormat.P8: Rebuild(Int8ul, len_(this.palette.color_even)),
+            PixelFormat.P4: Rebuild(Int8ul, this.palette.len_),
+            PixelFormat.P8: Rebuild(
+                Int8ul,
+                rebuild_8bpp_palette_length,
+            ),
             PixelFormat.RGB12: Const(0, Int8ul),
         })
+    ))
+    palette_size: int = csfield(cast(
+        'Computed[int]',
+        Computed(lambda ctx: (
+            256
+            if ctx.pixel_format == PixelFormat.P8 and ctx.raw_palette_size == 0
+            else ctx.raw_palette_size
+        )),
     ))
     _nframes2: int | None = csfield(Rebuild(Int8ul, len_(this.frames)))
     _check_nframes_match: None = csfield(Check(this.nframes == this._nframes2))
@@ -244,6 +268,34 @@ class Hca(DataclassMixin):
     _data_size: int | None = csfield(Rebuild(Int32ul, rebuild_hca_data_size))
     _frame_offsets: list[int] | None = csfield(Rebuild(Array(this.nframes, Int32ul), rebuild_hca_frame_offsets))
     frames: list[HcaFrameContainer] = csfield(Array(this.nframes, CsHcaFrameContainer))
+
+    @property
+    def pitch(self) -> float:
+        '''
+        Convenience method to estimate the pitch of the frame data (# of bytes
+        per line). Can be a fraction for packed formats i.e. P4 and RGB12.
+        '''
+        if self.pixel_format == PixelFormat.P8:
+            return float(align(self.width, 4))
+        elif self.pixel_format == PixelFormat.P4:
+            return self.width / 2
+        elif self.pixel_format == PixelFormat.RGB12:
+            return self.width * 12 / 8
+        else:
+            raise ValueError(f'Unknown pixel format {repr(self.pixel_format)}')
+
+    @property
+    def padded_width(self) -> int:
+        '''
+        Convenience method to estimate the padded width of the frames in
+        pixels.
+        '''
+        if self.pixel_format == PixelFormat.P8 or self.pixel_format == PixelFormat.P4:
+            return align(self.width, 4)
+        else:
+            # I wasn't able to get Besta HCATool to output any RGB12 image
+            # that has a width that is not 4-bytes aligned.
+            return self.width
 
 
 CsHca = DataclassStruct(Hca)
