@@ -125,7 +125,10 @@ class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
             raise ValueError('Palette must have no more than 16 entries.')
         sparse = dict(enumerate(rgb12s))
 
-        return cls(len_=len(rgb12s), color=[sparse.get(x, 0) << 12 | sparse.get(y, 0) for x in range(16) for y in range(16)])
+        res = cls(color=[(sparse.get(x, 0) << 12) | sparse.get(y, 0) for y in range(16) for x in range(16)])
+        res.len_ = len(rgb12s)
+
+        return res
 
     @override
     def to_rgb12(self) -> list[int]:
@@ -275,10 +278,8 @@ class Hca(DataclassMixin):
         Convenience method to estimate the pitch of the frame data (# of bytes
         per line). Can be a fraction for packed formats i.e. P4 and RGB12.
         '''
-        if self.pixel_format == PixelFormat.P8:
+        if self.pixel_format == PixelFormat.P8 or self.pixel_format == PixelFormat.P4:
             return float(align(self.width, 4))
-        elif self.pixel_format == PixelFormat.P4:
-            return self.width / 2
         elif self.pixel_format == PixelFormat.RGB12:
             return self.width * 12 / 8
         else:

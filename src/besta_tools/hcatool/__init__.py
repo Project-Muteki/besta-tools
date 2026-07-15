@@ -23,9 +23,10 @@ def rgb12_to_html(rgb12: int) -> str:
         Parse and build Besta's High-Compressed Animation (HCA) files.
 
         This was the primary image format used by the Besta GUI subsystem,
-        before they switched to PNGs for more powerful devices later.
-        It is however still used in many occasions for simple animations,
-        illustrations in .ebook format, etc.
+        before they switched to PNGs and MP4/MJPEG on more powerful devices.
+        It is however still the main image format used by the .book format,
+        and is still being used in various occasions when simple animation
+        with indexed color would suffice.
 
         The format is possibly inspired by GIF, but optimized for fast
         rendering on low-powered hardware rather than size and flexibility.
@@ -71,10 +72,22 @@ def do_info(file: BufferedReader) -> None:
             else 'Not transparent'
     ))
     if hca.pixel_format != PixelFormat.RGB12:
+        if not allow_transparency:
+            bframe_code = 'None'
+        elif hca.pixel_format == PixelFormat.P4:
+            if hca.transparent_color_index == 0x0f:
+                bframe_code = 'Erase'
+            elif hca.transparent_color_index > 0x0f:
+                bframe_code = 'None'
+            else:
+                bframe_code = 'Skip+Erase'
+        else:
+            bframe_code = 'Skip+Erase'
+
         click.secho(
             label_field(
-                'Enabled B-frame Code',
-                'Skip' if not allow_transparency else 'Skip+Erase'
+                'Available B-frame Transparency Code',
+                bframe_code
             )
         )
         color_table = tuple(
@@ -111,14 +124,14 @@ def do_info(file: BufferedReader) -> None:
         -p/--output-prefix, plus _idxMMM_seqNNN.png, where MMM is the frame
         index and NNN is the frame sequence number recorded in the HCA file.
         The transparency property overlays will be named similarly but with an
-        extra _e.
+        extra _e suffix.
 
-        The transparecy property overlay colors the pixels that need to be
+        The transparency property overlay colors the pixels that need to be
         deleted from the canvas as red (#ff00007f) and pixels that need to be
         carried over from the canvas as green (#00ff007f).
 
-        Both image types may be larger than the size encoded in the metadata
-        due to format design.
+        Both output image types may have a dimension larger than the size
+        indicated in the HCA header due to padding.
 
         This is more useful as a debugging tool and a HCA file inspector rather
         than as a general image manipulation pass.

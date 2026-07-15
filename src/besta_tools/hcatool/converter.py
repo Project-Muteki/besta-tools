@@ -10,7 +10,7 @@ from .formats import FrameType, Hca, HcaFrameContainer, HcaPalette4Bpp, HcaPalet
 from .lzw import BitstreamReader
 
 
-def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[ImageType, ImageType | None]:
+def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[ImageType | None, ImageType | None]:
     '''
     Apply palette on a single HCA frame and generate a PIL image object in RGBA
     color format, and a transparency property overlay image if applicable.
@@ -29,13 +29,15 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
     if frame is None:
         frame = hca.frames[frame_index]
 
+    if len(frame.data) == 0:
+        return None, None
+
     if frame.header.frame_type == FrameType.COMPRESSED:
         byte_it = chain.from_iterable(BitstreamReader(BytesIO(frame.data)).decode())
     else:
         byte_it = iter(frame.data)
 
     # lpadding is in amount of input data bytes.
-    # TODO: should we insert FFs instead?
     if frame.header.lpadding != 0:
         byte_it = chain(repeat(0xff, frame.header.lpadding), byte_it)
 
@@ -69,13 +71,14 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
         pal = hca.palette
         assert isinstance(pal, HcaPalette8Bpp)
         colors = (pal.color_even, list((c >> 4 | c << 12) for c in pal.color_odd))
+        ncolors = pal.size
         tc = hca.transparent_color_index
         tc_available = tc != 0xff
         for offset, index in enumerate(byte_it):
             # Make skip mark (0xff) implicitly transparent
             is_tc = tc_available and index == tc
-            is_skip = index == 0xff
-            _write_outbuf(colors[offset % 2][index] if index != 0xff else 0, is_tc or is_skip)
+            is_skip = tc_available and index == 0xff
+            _write_outbuf(colors[offset % 2][index] if index < ncolors else 0, is_tc or is_skip)
             _write_erasebuf(is_tc, is_skip)
 
     elif hca.pixel_format == PixelFormat.P4:
@@ -145,8 +148,9 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
 def dump_all_hca_frames(hca: Hca, prefix: Path) -> None:
     for i, frame in enumerate(hca.frames):
         img, erase = dump_hca_frame(hca, frame=frame)
-        with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}.png').open('wb') as f:
-            img.save(f)
+        if img is not None:
+            with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}.png').open('wb') as f:
+                img.save(f)
         if erase is not None:
             with (prefix.parent / f'{prefix.stem}_idx{i:03d}_seq{frame.header.seq:03d}_e.png').open('wb') as f:
                 erase.save(f)
