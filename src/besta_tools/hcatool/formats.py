@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Self, cast, override
 
-from construct import Array, Bytes, Check, Computed, Const, Default, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, ValidationError, len_, this
+from construct import Array, Bytes, Check, Computed, Const, Default, If, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, ValidationError, len_, this
 from construct_typed import DataclassMixin, DataclassStruct, csfield
 
 from besta_tools.common.utils import align
@@ -236,6 +236,9 @@ class Hca(DataclassMixin):
     pixel_format: PixelFormat = csfield(CsPixelFormat)
     height: int = csfield(Int16ul)
     width: int = csfield(Int16ul)
+    _width_check: None = csfield(
+        If(this.pixel_format == PixelFormat.RGB12, Check(this.width % 4 == 0))
+    )
     nframes: int = csfield(Rebuild(Int8ul, len_(this.frames)))
     # TODO: Somehow type of Switch didn't get automatically detected.
     raw_palette_size: int = csfield(cast(
@@ -273,15 +276,17 @@ class Hca(DataclassMixin):
     frames: list[HcaFrameContainer] = csfield(Array(this.nframes, CsHcaFrameContainer))
 
     @property
-    def pitch(self) -> float:
+    def pitch(self) -> int:
         '''
         Convenience method to estimate the pitch of the frame data (# of bytes
-        per line). Can be a fraction for packed formats i.e. P4 and RGB12.
+        per line).
         '''
-        if self.pixel_format == PixelFormat.P8 or self.pixel_format == PixelFormat.P4:
-            return float(align(self.width, 4))
+        if self.pixel_format == PixelFormat.P8:
+            return align(self.width, 4)
+        elif self.pixel_format == PixelFormat.P4:
+            return align(self.width, 4) // 2
         elif self.pixel_format == PixelFormat.RGB12:
-            return self.width * 12 / 8
+            return self.width * 12 // 8
         else:
             raise ValueError(f'Unknown pixel format {repr(self.pixel_format)}')
 

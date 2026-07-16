@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from io import BytesIO
-from itertools import batched, chain, repeat
+from itertools import batched, chain
+from logging import getLogger
 from pathlib import Path
 
 from PIL import Image
@@ -10,7 +11,10 @@ from .formats import FrameType, Hca, HcaFrameContainer, HcaPalette4Bpp, HcaPalet
 from .lzw import BitstreamReader
 
 
-def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[ImageType | None, ImageType | None]:
+logger = getLogger('besta_tools.hcatool.converter')
+
+
+def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[ImageType | None, ImageType | None, int]:
     '''
     Apply palette on a single HCA frame and generate a PIL image object in RGBA
     color format, and a transparency property overlay image if applicable.
@@ -30,16 +34,17 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
         frame = hca.frames[frame_index]
 
     if len(frame.data) == 0:
-        return None, None
+        return None, None, 0
 
     if frame.header.frame_type == FrameType.COMPRESSED:
-        byte_it = chain.from_iterable(BitstreamReader(BytesIO(frame.data)).decode())
+        decoder = BitstreamReader(BytesIO(frame.data)).decode()
+        byte_it = chain.from_iterable(decoder)
     else:
+        decoder = None
         byte_it = iter(frame.data)
 
-    # lpadding is in amount of input data bytes.
-    if frame.header.lpadding != 0:
-        byte_it = chain(repeat(0xff, frame.header.lpadding), byte_it)
+    if frame.header.lpadding % hca.pitch != 0:
+        logger.warning(f'lpadding {frame.header.lpadding} does not align with pitch {hca.pitch}.')
 
     outbuf = BytesIO()
     erasebuf = BytesIO()
@@ -125,32 +130,36 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
     else:
         raise NotImplementedError()
 
-    # rpadding is implicit, so just fill the rest of the pixels with #00000000.
-    # For the erase bitmap, fill with skip color (translucent green #00ff007f).
-    padding = hca.padded_width * hca.height * 4 - len(outbuf.getvalue())
-    if padding > 0:
-        outbuf.write(b'\x00' * padding)
-        erasebuf.write(bytes((0, 255, 0, 127)) * (padding // 4))
+    if frame.header.frame_type == FrameType.COMPRESSED:
+        assert decoder is not None
+        input_count = decoder.num_bytes_written
+    else:
+        input_count = len(frame.data)
+
+    if input_count % hca.pitch != 0:
+        logger.warning(f'rpadding {input_count} does not align with pitch {hca.pitch}.')
+
+    out_height = int(input_count // hca.pitch)
 
     out = Image.frombuffer(
-        'RGBA', (hca.padded_width, hca.height), outbuf.getvalue(),
+        'RGBA', (hca.padded_width, out_height), outbuf.getvalue(),
         'raw', 'RGBA', 0, 1
     )
     if hca.pixel_format != PixelFormat.RGB12:
         erase = Image.frombuffer(
-            'RGBA', (hca.padded_width, hca.height), erasebuf.getvalue(),
+            'RGBA', (hca.padded_width, out_height), erasebuf.getvalue(),
             'raw', 'RGBA', 0, 1
         )
-        return out, erase
-    return out, None
+        return out, erase, int(frame.header.lpadding // hca.pitch)
+    return out, None, int(frame.header.lpadding // hca.pitch)
 
 
 def dump_all_hca_frames(hca: Hca, prefix: Path) -> None:
     for i, frame in enumerate(hca.frames):
-        img, erase = dump_hca_frame(hca, frame=frame)
+        img, erase, height = dump_hca_frame(hca, frame=frame)
         if img is not None:
-            with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}.png').open('wb') as f:
+            with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}_+{height}.png').open('wb') as f:
                 img.save(f)
         if erase is not None:
-            with (prefix.parent / f'{prefix.stem}_idx{i:03d}_seq{frame.header.seq:03d}_e.png').open('wb') as f:
+            with (prefix.parent / f'{prefix.stem}_idx{i:03d}_seq{frame.header.seq:03d}_+{height}_e.png').open('wb') as f:
                 erase.save(f)
