@@ -121,8 +121,9 @@ def do_info(file: BufferedReader) -> None:
         discarded.
 
         The image files will be named as the prefix specified with
-        -p/--output-prefix, plus _idxMMM_seqNNN.png, where MMM is the frame
-        index and NNN is the frame sequence number recorded in the HCA file.
+        -p/--output-prefix, plus _idxMMM_seqNNN+Y.png, where MMM is the frame
+        index, NNN is the frame sequence number recorded in the HCA file, and
+        Y is the Y-axis offset of the frame data starting from the top.
         The transparency property overlays will be named similarly but with an
         extra _e suffix.
 
