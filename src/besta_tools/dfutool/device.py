@@ -105,6 +105,14 @@ KNOWN_DEVICE_TYPES: Sequence[DfuType] = (
         product='S3C2443',
     ),
     DfuType(
+        name='s3c-epson-phy',
+        description='S3C2416 family bootloader (board with Epson USB PHY)',
+        vid=0x054b,
+        pid=0x1582,
+        manufacturer='Philips',
+        product='ISP1582',
+    ),
+    DfuType(
         name='imx233',
         description='iMX233 family bootloader',
         vid=0x0419,
