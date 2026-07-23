@@ -1,12 +1,21 @@
+from collections.abc import Sequence
+from enum import Enum, auto
 from io import BufferedReader
 from pathlib import Path
 
+from PIL import Image
 import click_extra as click
 from click_extra import ColorOption, NoColorOption, TableFormat, VerbosityOption, VerboseOption, QuietOption, VersionOption, Style
 
-from besta_tools.common.styling import ListLabel, label_field
-from besta_tools.hcatool.converter import dump_all_hca_frames
-from besta_tools.hcatool.formats import CsHca, PixelFormat
+from ..common.styling import ListLabel, label_field
+from .converter import dump_all_hca_frames, frames_to_hca
+from .formats import CsHca, PixelFormat
+
+
+class CompressionOption(Enum):
+    AUTO = auto()
+    NO = auto()
+    YES = auto()
 
 
 def rgb12_to_html(rgb12: int) -> str:
@@ -154,3 +163,72 @@ def do_dump(file: Path, output_prefix: Path | None) -> None:
         output_prefix = Path(file.parent / file.stem)
     hca = CsHca.parse_file(file)
     dump_all_hca_frames(hca, output_prefix)
+
+
+@app.command(
+    'encode',
+    short_help='Encode a HCA image from well-formatted series of images.',
+    help=(
+        '''
+        Encode a HCA image from well-formatted series of IMAGES.
+
+        This command will generally not attempt to coerce the input images into
+        a compatible encoding, nor to do pre-processing. This means care has to
+        be taken when exporting images for use with the encode command.
+        Specifically, the input images must follow the following rules:
+
+        1. If encoding an animation with more than one frame, the input images
+        must use indexed color with less than 256 colors in P8 mode, or less
+        than 16 colors in P4 mode. If --coalesce is specified, however, the
+        images can have up to 256 and 16 colors respectively, at the cost of
+        potentially larger output file size due to every frame being an
+        I-frame.
+
+        2. All images must also use the exact same palette and have exactly the
+        same width and height. A common mistake is to let the image authoring
+        software to trim unused colors when exporting images. Make sure to
+        include unused colors when doing so.
+
+        3. If encoding a static image with --color-mode rgb12, the input
+        image can be in RGB or RGBA format, but any transparency information
+        will be lost, all colors will be clipped to RGB12, and the image
+        width MUST be a multiple of 4. Due to this, passing arbitrary static
+        images to the encode command is still discouraged, despite the
+        hard restrictions around static HCA is more relaxed comparing to
+        animated HCAs.
+        '''
+    )
+)
+@click.argument('hca', type=click.Path(dir_okay=False, writable=True, path_type=Path))
+@click.argument('image', type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument('images', nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    '--coalesce/--no-coalesce',
+    default=False,
+    help='If specified, B-frame encoding will be disabled and each image will be outputted as-is to the HCA file.',
+)
+@click.option(
+    '-m', '--color-mode',
+    required=True,
+    type=click.Choice(PixelFormat, case_sensitive=False),
+    help='Color mode to use. Note that RGB12 is not supported if you supply more than one images.',
+)
+@click.option(
+    '-c', '--compress',
+    type=click.Choice(CompressionOption, case_sensitive=False),
+    default=CompressionOption.AUTO,
+    help='Whether compression should be performed on frames. If set to auto, compression will be used if it yields smaller file.',
+)
+def do_build(hca: Path, image: Path, images: Sequence[Path], coalesce: bool, color_mode: PixelFormat, compress: CompressionOption) -> None:
+    COMP: dict[CompressionOption, bool | None] = {
+        CompressionOption.AUTO: None,
+        CompressionOption.NO: False,
+        CompressionOption.YES: True,
+    }
+
+    images_ = (image, *images)
+
+    frames = [Image.open(path) for path in images_]
+    hca_obj = frames_to_hca(frames, color_mode, coalesce, COMP[compress])
+
+    CsHca.build_file(hca_obj, hca)

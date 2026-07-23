@@ -70,8 +70,8 @@ class HcaPaletteBase(ABC):
     def from_rgb24(cls, rgb: Sequence[tuple[int, int, int]]) -> Self:
         rgb12 = list(
             ((r >> 4) & 0xf) |
-                ((g >> 4) & 0xf) << 4 |
-                ((b >> 4) & 0xf) << 8
+                (((g >> 4) & 0xf) << 4) |
+                (((b >> 4) & 0xf) << 8)
             for r, g, b in rgb
         )
         return cls.from_rgb12(rgb12)
