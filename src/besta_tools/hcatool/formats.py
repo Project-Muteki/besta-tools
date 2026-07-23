@@ -66,6 +66,16 @@ class HcaPaletteBase(ABC):
         )
         return cls.from_rgb12(rgb12)
 
+    @classmethod
+    def from_rgb24(cls, rgb: Sequence[tuple[int, int, int]]) -> Self:
+        rgb12 = list(
+            ((r >> 4) & 0xf) |
+                ((g >> 4) & 0xf) << 4 |
+                ((b >> 4) & 0xf) << 8
+            for r, g, b in rgb
+        )
+        return cls.from_rgb12(rgb12)
+
     @abstractmethod
     def to_rgb12(self) -> list[int]:
         raise NotImplementedError()
