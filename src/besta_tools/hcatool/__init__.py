@@ -81,22 +81,17 @@ def do_info(file: BufferedReader) -> None:
             else 'Not transparent'
     ))
     if hca.pixel_format != PixelFormat.RGB12:
-        if not allow_transparency:
-            bframe_code = 'None'
-        elif hca.pixel_format == PixelFormat.P4:
-            if hca.transparent_color_index == 0x0f:
-                bframe_code = 'Erase'
-            elif hca.transparent_color_index > 0x0f:
-                bframe_code = 'None'
-            else:
-                bframe_code = 'Skip+Erase'
-        else:
-            bframe_code = 'Skip+Erase'
+        allow_skip = (
+            True
+            if (hca.pixel_format == PixelFormat.P4 and hca.palette.size < 16) or
+                (hca.pixel_format == PixelFormat.P8 and hca.palette.size < 256)
+            else False
+        )
 
         click.secho(
             label_field(
-                'Available B-frame Transparency Code',
-                bframe_code
+                'Skip Mark Present',
+                ('No', 'Yes')[allow_skip]
             )
         )
         color_table = tuple(
@@ -130,15 +125,15 @@ def do_info(file: BufferedReader) -> None:
         discarded.
 
         The image files will be named as the prefix specified with
-        -p/--output-prefix, plus _idxMMM_seqNNN+Y.png, where MMM is the frame
-        index, NNN is the frame sequence number recorded in the HCA file, and
-        Y is the Y-axis offset of the frame data starting from the top.
+        -p/--output-prefix, plus _idxMMM_seqNNN.png, where MMM is the frame
+        index and NNN is the frame sequence number recorded in the HCA file.
         The transparency property overlays will be named similarly but with an
         extra _e suffix.
 
         The transparency property overlay colors the pixels that need to be
         deleted from the canvas as red (#ff00007f) and pixels that need to be
-        carried over from the canvas as green (#00ff007f).
+        carried over from the canvas as green (#00ff007f). Opaque pixels are
+        marked as white (#ffffff7f).
 
         Both output image types may have a dimension larger than the size
         indicated in the HCA header due to padding.
@@ -182,7 +177,7 @@ def do_dump(file: Path, output_prefix: Path | None) -> None:
         than 16 colors in P4 mode. If --coalesce is specified, however, the
         images can have up to 256 and 16 colors respectively, at the cost of
         potentially larger output file size due to every frame being an
-        I-frame.
+        I-frame. All colors in the palette will also be clipped to RGB12.
 
         2. All images must also use the exact same palette and have exactly the
         same width and height. A common mistake is to let the image authoring

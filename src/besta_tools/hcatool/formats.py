@@ -7,7 +7,7 @@ complexity, while maintaining the flexibility of the resulting objects.
 '''
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from itertools import islice
 from typing import TYPE_CHECKING, Self, cast, override
@@ -80,6 +80,15 @@ class HcaPaletteBase(ABC):
     def to_rgb12(self) -> list[int]:
         raise NotImplementedError()
 
+    def to_rgb12_tuples(self) -> list[tuple[int, int, int]]:
+        return list(
+            (
+                c & 0xf,
+                (c >> 4) & 0xf,
+                (c >> 8) & 0xf,
+            ) for c in self.to_rgb12()
+        )
+
     def to_rgb(self) -> list[tuple[float, float, float]]:
         return list(
             (
@@ -88,6 +97,16 @@ class HcaPaletteBase(ABC):
                 ((c >> 8) & 0xf) / 0xf
             ) for c in self.to_rgb12()
         )
+
+    def to_rgb24(self) -> list[tuple[int, int, int]]:
+        def _iter():
+            for c in self.to_rgb12():
+                r = c & 0xf
+                g = (c >> 4) & 0xf
+                b = (c >> 8) & 0xf
+                yield (r << 4) | r, (g << 4) | g, (b << 4) | b
+
+        return list(_iter())
 
 
 # We intentionally do not use construct to rebuild the palette so we can get
@@ -113,6 +132,48 @@ class HcaPalette8Bpp(DataclassMixin, HcaPaletteBase):
     @override
     def to_rgb12(self) -> list[int]:
         return list(self.color_even)
+
+    def _color_even_as_iter(self) -> Generator[tuple[int, int, int]]:
+        return (
+            (
+                c & 0xf,
+                (c >> 4) & 0xf,
+                (c >> 8) & 0xf,
+            ) for c in self.color_even
+        )
+
+    def _color_odd_as_iter(self) -> Generator[tuple[int, int, int]]:
+        return (
+            (
+                (c >> 4) & 0xf,
+                (c >> 8) & 0xf,
+                (c >> 12) & 0xf,
+            ) for c in self.color_odd
+        )
+
+    def color_even_as_rgb12(self) -> list[tuple[int, int, int]]:
+        return list(self._color_even_as_iter())
+
+    def color_even_as_rgb24(self) -> list[tuple[int, int, int]]:
+        return list(
+            (
+                (c[0] << 4) | c[0],
+                (c[1] << 4) | c[1],
+                (c[2] << 4) | c[2],
+            ) for c in self._color_even_as_iter()
+        )
+
+    def color_odd_as_rgb12(self) -> list[tuple[int, int, int]]:
+        return list(self._color_odd_as_iter())
+
+    def color_odd_as_rgb24(self) -> list[tuple[int, int, int]]:
+        return list(
+            (
+                (c[0] << 4) | c[0],
+                (c[1] << 4) | c[1],
+                (c[2] << 4) | c[2],
+            ) for c in self._color_odd_as_iter()
+        )
 
 
 CsHcaPalette8Bpp = DataclassStruct(HcaPalette8Bpp)
@@ -143,6 +204,31 @@ class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
     @override
     def to_rgb12(self) -> list[int]:
         return [(c >> 12) & 0xfff for c in islice(self.color, self.len_)]
+
+    def color_as_iter(self) -> Generator[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+        return (
+            (
+                (cc & 0xf, (cc >> 4) & 0xf, (cc >> 8) & 0xf),
+                ((cc >> 12) & 0xf, (cc >> 16) & 0xf, (cc >> 20) & 0xf)
+            ) for cc in self.color
+        )
+
+    def color_as_rgb12(self) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+        return list(self.color_as_iter())
+
+    def color_as_rgb24(self) -> list[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+        return list(
+            ((
+                (c0[0] << 4) | c0[0],
+                (c0[1] << 4) | c0[1],
+                (c0[2] << 4) | c0[2],
+            ),
+            (
+                (c1[0] << 4) | c1[0],
+                (c1[1] << 4) | c1[1],
+                (c1[2] << 4) | c1[2],
+            )) for c0, c1 in self.color_as_iter()
+        )
 
 
 CsHcaPalette4Bpp = DataclassStruct(HcaPalette4Bpp)

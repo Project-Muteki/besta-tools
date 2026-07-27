@@ -1,15 +1,15 @@
 from typing import Final
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from io import BytesIO
-from itertools import batched, chain
+from itertools import chain, product
 from logging import getLogger
 from pathlib import Path
 
-from numpy import asarray, c_, dtype, empty, ndarray, uint8, zeros
+from numpy import array, asarray, bool_, c_, dtype, empty, frombuffer, fromiter, full, ndarray, uint8, zeros
 from numpy.typing import NDArray
 
-from PIL.Image import Image, frombuffer as image_frombuffer
+from PIL.Image import Image, fromarray as npa2image
 
 from besta_tools.common.utils import align
 
@@ -352,7 +352,7 @@ def image_to_hca(
     )
 
 
-def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[Image | None, Image | None, int]:
+def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[Image | None, Image | None]:
     '''
     Apply palette on a single HCA frame and generate a PIL image object in RGBA
     color format, and a transparency property overlay image if applicable.
@@ -364,140 +364,139 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
     from the canvas as red (#ff00007f) and pixels that need to be carried over
     from the canvas as green (#00ff007f).
     '''
+    TPO_SKIP: Final = (0, 255, 0, 127)
+    TPO_TC: Final = (255, 0, 0, 127)
+    TPO_NOP: Final = (255, 255, 255, 127)
+
     if frame is None and frame_index >= hca.nframes:
         raise ValueError(f'Frame {frame_index} does not exist.')
 
-    byte_it: Iterator[int]
     if frame is None:
         frame = hca.frames[frame_index]
 
     if len(frame.data) == 0:
-        return None, None, 0
+        return None, None
 
+    data_1d: ndarray[tuple[int], dtype[uint8]]
     if frame.header.frame_type == FrameType.COMPRESSED:
         decoder = BitstreamReader(BytesIO(frame.data)).decode()
-        byte_it = chain.from_iterable(decoder)
+        data_1d = fromiter(chain.from_iterable(decoder), dtype=uint8)
     else:
-        decoder = None
-        byte_it = iter(frame.data)
+        data_1d = frombuffer(frame.data, dtype=uint8)
 
-    if frame.header.lpadding % hca.pitch != 0:
-        logger.warning(f'lpadding {frame.header.lpadding} does not align with pitch {hca.pitch}.')
+    padded_size = hca.pitch * hca.height
+    if data_1d.size < padded_size:
+        data_1d_padded = full(padded_size, fill_value=0xff, dtype=uint8)
+        data_1d_padded[frame.header.lpadding:frame.header.lpadding+data_1d.size] = data_1d
+        data_1d = data_1d_padded
 
-    outbuf = BytesIO()
-    erasebuf = BytesIO()
+    padded_width = align(hca.width, 4)
+    shape_1d = (padded_width * hca.height, 4)
+    rgba_1d = zeros(shape_1d, uint8)
+    tpo_1d = full(shape_1d, fill_value=TPO_NOP, dtype=uint8)
 
-    def _write_outbuf(rgb12: int, t: bool):
-        r = rgb12 & 0xf
-        g = (rgb12 >> 4) & 0xf
-        b = (rgb12 >> 8) & 0xf
-        pixel = bytes((
-            (r << 4) | r,
-            (g << 4) | g,
-            (b << 4) | b,
-            0 if t else 255,
-        ))
-        outbuf.write(pixel)
-
-    def _write_erasebuf(tc: bool, skip: bool):
-        if skip:
-            pixel = bytes((0, 255, 0, 127))
-        else:
-            if tc:
-                pixel = bytes((255, 0, 0, 127))
+    if hca.pixel_format == PixelFormat.RGB12:
+        for ppos, cpos in product(range(2), range(3)):
+            nibble = ppos * 3 + cpos
+            byte = nibble // 2
+            if nibble % 2 == 0:
+                color = data_1d[byte::3] & 0xf
             else:
-                pixel = bytes((0, 0, 0, 127))
+                color = (data_1d[byte::3] >> 4) & 0xf
+            rgba_1d[ppos::2, cpos] = (color << 4) | color
+        rgba_1d[:, 3] = 255
 
-        erasebuf.write(pixel)
+    elif hca.pixel_format == PixelFormat.P8:
+        # Provide an odd-even view of the data for convenience
+        data_1d_vec = data_1d.reshape((data_1d.shape[0] // 2, 2))
 
-    if hca.pixel_format == PixelFormat.P8:
-        pal = hca.palette
-        assert isinstance(pal, HcaPalette8Bpp)
-        colors = (pal.color_even, list((c >> 4 | c << 12) for c in pal.color_odd))
-        ncolors = pal.size
-        tc = hca.transparent_color_index
-        tc_available = tc != 0xff
-        for offset, index in enumerate(byte_it):
-            # Make skip mark (0xff) implicitly transparent
-            is_tc = tc_available and index == tc
-            is_skip = tc_available and index == 0xff
-            _write_outbuf(colors[offset % 2][index] if index < ncolors else 0, is_tc or is_skip)
-            _write_erasebuf(is_tc, is_skip)
+        # Change the shape to align with input data.
+        shape_1d_vec = (shape_1d[0] // 2, 2, shape_1d[1])
+        rgba_1d_vec = rgba_1d.reshape(shape_1d_vec)
+
+        # Generate transparent color and skip mark mapping
+        if hca.palette.size < 256:
+            skip_mark_indices = data_1d == 0xff
+        else:
+            logger.debug('Image disables skip mark. Use all zero skip mark map.')
+            skip_mark_indices = zeros(data_1d.shape, bool_)
+        
+        if hca.transparent_color_index != 255:
+            tc_indices = data_1d == hca.transparent_color_index
+        else:
+            logger.debug('Image disables transparent color. Use all zero transparent color map.')
+            tc_indices = zeros(data_1d.shape, bool_)
+
+        # Mark transparency on TPO
+        tpo_1d[tc_indices, 0:4] = TPO_TC
+        tpo_1d[skip_mark_indices, 0:4] = TPO_SKIP
+
+        # Expand redundant palette
+        assert isinstance(hca.palette, HcaPalette8Bpp)
+
+        palette_even = array(hca.palette.color_even_as_rgb24(), uint8)
+        palette_odd = array(hca.palette.color_odd_as_rgb24(), uint8)
+
+        # Mask off skip marks to avoid out of bound access.
+        not_skip_mark_indices_even = ~(skip_mark_indices[0::2])
+        not_skip_mark_indices_odd = ~(skip_mark_indices[1::2])
+
+        # Color lookup
+        rgba_1d_vec[..., 3] = 255
+        rgba_1d_vec[not_skip_mark_indices_even, 0, 0:3] = palette_even[data_1d_vec[not_skip_mark_indices_even, 0]]
+        rgba_1d_vec[not_skip_mark_indices_odd, 1, 0:3] = palette_odd[data_1d_vec[not_skip_mark_indices_odd, 1]]
+        rgba_1d[skip_mark_indices | tc_indices, 3] = 0
 
     elif hca.pixel_format == PixelFormat.P4:
-        pal = hca.palette
-        assert isinstance(pal, HcaPalette4Bpp)
-        color = pal.color
-        tc = hca.transparent_color_index
-        tc_available = 0 <= tc < 16
-        tc_has_skip = tc <= 15
-        tctc = ((tc << 4) | tc) & 0xff
-        for byte in byte_it:
-            # The actual bitstream uses 4 UPPER bits to store the even pixel.
-            cv = color[byte]
-            if tc_available:
-                is_tctc = tctc ^ byte
-                is_tc0 = is_tctc & 0xf0 == 0
-                is_tc1 = is_tctc & 0x0f == 0
-            else:
-                is_tc0 = False
-                is_tc1 = False
-            if tc_has_skip:
-                is_skip0 = byte & 0xf0 == 0xf0
-                is_skip1 = byte & 0x0f == 0x0f
-            else:
-                is_skip0 = False
-                is_skip1 = False
+        # Change the shape to align with input data.
+        shape_1d_vec = (shape_1d[0] // 2, 2, shape_1d[1])
+        rgba_1d_vec = rgba_1d.reshape(shape_1d_vec)
+        tpo_1d_vec = tpo_1d.reshape(shape_1d_vec)
 
-            # Palette uses 12 LOWER bits to store the even pixel.
-            rgb12_0 = cv & 0xfff
-            rgb12_1 = (cv >> 12) & 0xfff
+        # Generate transparent color and skip mark mapping
+        if hca.palette.size < 16:
+            skip_mark_indices = data_1d == 0xff
+        else:
+            logger.debug('Image disables skip mark. Use all zero skip mark map.')
+            skip_mark_indices = zeros(data_1d.shape, bool_)
 
-            _write_outbuf(rgb12_0, is_tc0 or is_skip0)
-            _write_outbuf(rgb12_1, is_tc1 or is_skip1)
-            _write_erasebuf(is_tc0, is_skip0)
-            _write_erasebuf(is_tc1, is_skip1)
+        if hca.transparent_color_index != 255:
+            tc_indices_odd = (data_1d & 0xf) == hca.transparent_color_index
+            tc_indices_even = (data_1d & 0xf0) == hca.transparent_color_index << 4
+        else:
+            logger.debug('Image disables transparent color. Use all zero transparent color map.')
+            tc_indices_odd = tc_indices_even = zeros(data_1d.shape, bool_)
 
-    elif hca.pixel_format == PixelFormat.RGB12:
-        for twopixel in batched(byte_it, 3):
-            pixels = int.from_bytes(bytes(twopixel), 'little')
-            _write_outbuf(pixels & 0xfff, False)
-            if len(twopixel) == 3:
-                _write_outbuf((pixels >> 12) & 0xfff, False)
+        # Mark transparency on TPO
+        tpo_1d_vec[tc_indices_even, 0, 0:4] = TPO_TC
+        tpo_1d_vec[tc_indices_odd, 1, 0:4] = TPO_TC
+        tpo_1d_vec[skip_mark_indices, :, 0:4] = TPO_SKIP
 
-    else:
-        raise NotImplementedError()
+        # Expand redundant palette
+        assert isinstance(hca.palette, HcaPalette4Bpp)
 
-    if frame.header.frame_type == FrameType.COMPRESSED:
-        assert decoder is not None
-        input_count = decoder.num_bytes_written
-    else:
-        input_count = len(frame.data)
+        palette_vec = array(hca.palette.color_as_rgb24(), uint8)
 
-    if input_count % hca.pitch != 0:
-        logger.warning(f'rpadding {input_count} does not align with pitch {hca.pitch}.')
+        # Color lookup
+        rgba_1d_vec[..., 3] = 255
+        rgba_1d_vec[~skip_mark_indices, 0, 0:3] = palette_vec[data_1d[~skip_mark_indices], 0]
+        rgba_1d_vec[~skip_mark_indices, 1, 0:3] = palette_vec[data_1d[~skip_mark_indices], 1]
+        rgba_1d_vec[skip_mark_indices, :, 3] = 0
+        rgba_1d_vec[tc_indices_even, 0, 3] = 0
+        rgba_1d_vec[tc_indices_odd, 1, 3] = 0
 
-    out_height = int(input_count // hca.pitch)
+    rgba_img = npa2image(rgba_1d.reshape((hca.height, padded_width, 4)), 'RGBA')
+    tpo_img = npa2image(tpo_1d.reshape((hca.height, padded_width, 4)), 'RGBA')
 
-    out = image_frombuffer(
-        'RGBA', (hca.padded_width, out_height), outbuf.getvalue(),
-        'raw', 'RGBA', 0, 1
-    )
-    if hca.pixel_format != PixelFormat.RGB12:
-        erase = image_frombuffer(
-            'RGBA', (hca.padded_width, out_height), erasebuf.getvalue(),
-            'raw', 'RGBA', 0, 1
-        )
-        return out, erase, int(frame.header.lpadding // hca.pitch)
-    return out, None, int(frame.header.lpadding // hca.pitch)
+    return rgba_img, tpo_img
 
 
 def dump_all_hca_frames(hca: Hca, prefix: Path) -> None:
     for i, frame in enumerate(hca.frames):
-        img, erase, height = dump_hca_frame(hca, frame=frame)
+        img, erase = dump_hca_frame(hca, frame=frame)
         if img is not None:
-            with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}_+{height}.png').open('wb') as f:
+            with (prefix.parent / f'{prefix.name}_idx{i:03d}_seq{frame.header.seq:03d}.png').open('wb') as f:
                 img.save(f)
         if erase is not None:
-            with (prefix.parent / f'{prefix.stem}_idx{i:03d}_seq{frame.header.seq:03d}_+{height}_e.png').open('wb') as f:
+            with (prefix.parent / f'{prefix.stem}_idx{i:03d}_seq{frame.header.seq:03d}_e.png').open('wb') as f:
                 erase.save(f)
