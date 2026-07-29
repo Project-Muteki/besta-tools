@@ -1,14 +1,16 @@
 from collections.abc import Sequence
 from enum import Enum, auto
 from io import BufferedReader
+import json
 from pathlib import Path
+from typing import Final
 
 from PIL import Image
 import click_extra as click
 from click_extra import ColorOption, NoColorOption, TableFormat, VerbosityOption, VerboseOption, QuietOption, VersionOption, Style
 
 from ..common.styling import ListLabel, label_field
-from .converter import dump_all_hca_frames, frames_to_hca
+from .converter import dump_all_hca_frames, frames_to_hca, hca_to_frames
 from .formats import CsHca, PixelFormat
 
 
@@ -18,11 +20,47 @@ class CompressionOption(Enum):
     YES = auto()
 
 
+# Preferred suffixes if they are not the same with the format name.
+_IMAGE_SUFFIX_OVERRIDE: Final = {
+    'JPEG': '.jpg',
+    'JPEG2000': '.jp2',
+    'SPIDER': '.spi',
+}
+
+
+# Exclude stub format from save format list.
+# WMF is also excluded because it's platform-dependent.
+_IMAGE_FORMAT_BLACKLIST: Final = frozenset((
+    'BUFR',
+    'GRIB',
+    'HDF5',
+    'WMF',
+))
+
+
 def rgb12_to_html(rgb12: int) -> str:
     r = rgb12 & 0xf
     g = (rgb12 >> 4) & 0xf
     b = (rgb12 >> 8) & 0xf
     return f'#{r:1x}{g:1x}{b:1x}'
+
+
+def image_query_output_format() -> tuple[str, ...]:
+    # This loads all builtin Pillow plugins and populates the SAVE dict.
+    _ = Image.registered_extensions()
+    return tuple(sorted(
+        k for k in Image.SAVE.keys() if k not in _IMAGE_FORMAT_BLACKLIST
+    ))
+
+
+def jsonobj(v: str) -> dict[str, object]:
+    return json.loads(v)  # pyright: ignore[reportAny]
+
+
+def _get_suffix_from_pillow_type(type_: str | None) -> str:
+    if type_ is None:
+        return '.png'
+    return _IMAGE_SUFFIX_OVERRIDE.get(type_, f'.{type_.lower()}')
 
 
 @click.group(
@@ -73,25 +111,17 @@ def do_info(file: BufferedReader) -> None:
     click.secho(label_field('Pitch', str(hca.pitch)))
     click.secho(label_field('# of Frames', str(hca.nframes)))
     click.secho(label_field('# of Colors', str(hca.palette_size)))
-    allow_transparency = hca.transparent_color_index != 0xff
     click.secho(label_field(
         'Transparent Color Index',
         str(hca.transparent_color_index)
-            if allow_transparency
+            if hca.allow_transparency
             else 'Not transparent'
     ))
     if hca.pixel_format != PixelFormat.RGB12:
-        allow_skip = (
-            True
-            if (hca.pixel_format == PixelFormat.P4 and hca.palette.size < 16) or
-                (hca.pixel_format == PixelFormat.P8 and hca.palette.size < 256)
-            else False
-        )
-
         click.secho(
             label_field(
                 'Skip Mark Present',
-                ('No', 'Yes')[allow_skip]
+                ('No', 'Yes')[hca.allow_skip]
             )
         )
         color_table = tuple(
@@ -99,7 +129,11 @@ def do_info(file: BufferedReader) -> None:
             for i, c in enumerate(hca.palette.to_rgb12())
         )
         click.secho('\n' + ListLabel('Palette Data') + ':')
-        click.print_table(color_table, ('#', 'Color'), table_format=TableFormat.ALIGNED)
+        click.print_table(  # pyright: ignore[reportUnknownMemberType]
+            color_table,
+            ('#', 'Color'),
+            table_format=TableFormat.ALIGNED,
+        )
 
     frame_table = tuple(
         (str(i), str(frame.header.seq), frame.header.frame_type.name, str(len(frame.data)), str(frame.header.lpadding))
@@ -107,7 +141,11 @@ def do_info(file: BufferedReader) -> None:
     )
 
     click.secho('\n' + ListLabel('Frames') + ':')
-    click.print_table(frame_table, ('#', 'Seq#', 'Format', 'Size', 'L. Pad'), table_format=TableFormat.ALIGNED)
+    click.print_table(  # pyright: ignore[reportUnknownMemberType]
+        frame_table,
+        ('#', 'Seq#', 'Format', 'Size', 'L. Pad'),
+        table_format=TableFormat.ALIGNED,
+    )
 
 
 @app.command(
@@ -227,3 +265,50 @@ def do_build(hca: Path, image: Path, images: Sequence[Path], coalesce: bool, col
     hca_obj = frames_to_hca(frames, color_mode, coalesce, COMP[compress])
 
     CsHca.build_file(hca_obj, hca)
+
+
+@app.command(
+    'decode',
+    short_help='Decode a HCA image to a series of images.',
+    help=(
+        '''
+        Decode a HCA image to a series of images.
+
+        This is only guaranteed to be lossless when the input HCA has been
+        encoded by the encode command (due to how the HCA palette works),
+        and the output image format must support palette (when the HCA pixel
+        format is P8 or P4).
+        '''
+    )
+)
+@click.argument('hca', type=click.Path(dir_okay=False, path_type=Path))
+@click.option(
+    '-o', '--output',
+    type=click.Path(path_type=Path),
+    help='Override output file name. If not specified, the name of the original HCA file will be used.',
+)
+@click.option(
+    '-f', '--format', 'format_',
+    type=click.Choice(image_query_output_format(), case_sensitive=False),
+    help='Image format of the output images. If unspecified, the format will be automatically inferred from suffix.',
+)
+@click.option(
+    '--save-parameters',
+    type=jsonobj,
+    default='{}',
+    help='JSON representation of any extra save parameters passed to Pillow. Note that not all options can be used.',
+)
+def do_decode(hca: Path, output: Path | None, format_: str | None, save_parameters: dict[str, object]) -> None:
+    if 'format' in save_parameters:
+        del save_parameters['format']
+
+    hca_obj = CsHca.parse_file(hca)
+    frames = hca_to_frames(hca_obj)
+    if output is None:
+        output = hca.with_suffix(_get_suffix_from_pillow_type(format_))
+    if len(frames) == 1:
+        frames[0].save(output, format_, **save_parameters)
+    else:
+        for i, frame in enumerate(frames):
+            output_name = output.with_stem(f'{output.stem}_{i}')
+            frame.save(output_name, format_, **save_parameters)

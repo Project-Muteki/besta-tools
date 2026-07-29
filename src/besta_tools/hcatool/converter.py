@@ -32,7 +32,7 @@ def pack_4b(inp: NDArray[uint8]) -> NDArray[uint8]:
         raise ValueError('Last axis length must be a multiple of 2.')
     assert inp.size % 2 == 0
 
-    flattened = inp.reshape(inp.size)
+    flattened = inp.ravel()
     outp = empty(shape=inp.size // 2, dtype=uint8)
     outp[::] = (flattened[0::2] << 4) | (flattened[1::2] & 0xf)
 
@@ -43,7 +43,7 @@ def unpack_4b(inp: NDArray[uint8]) -> NDArray[uint8]:
     if inp.ndim == 0:
         raise ValueError('Packing 0 dimension array does not make sense.')
 
-    flattened = inp.reshape(inp.size)
+    flattened = inp.ravel()
     outp = empty(shape=inp.size * 2, dtype=uint8)
     outp[0::2] = flattened >> 4
     outp[1::2] = flattened & 0xf
@@ -155,6 +155,20 @@ def _convert_palette(template: Image, color_mode: PixelFormat, coalesce: bool) -
         return tci, palette_data, HcaPalette8Bpp.from_rgb24(for_hcapalette)
 
 
+def _clip_rgb24_to_rgb12(rgb24: ndarray[tuple[int, int, int], dtype[uint8]]) -> ndarray[tuple[int, int, int], dtype[uint8]]:
+    '''
+    Vectorized routine that converts a RGB24 raw image into Besta RGB12.
+    '''
+    assert rgb24.size % 6 == 0
+
+    clipped = rgb24 // 16
+    outp = empty((rgb24.shape[0], rgb24.shape[1] // 2, rgb24.shape[2]), uint8)
+    outp[..., 0] = clipped[:, 0::2, 0] | (clipped[:, 0::2, 1] << 4)
+    outp[..., 1] = clipped[:, 0::2, 2] | (clipped[:, 1::2, 0] << 4)
+    outp[..., 2] = clipped[:, 1::2, 1] | (clipped[:, 1::2, 2] << 4)
+    return outp
+
+
 def frames_to_hca(
     input_frames: Sequence[Image],
     color_mode: PixelFormat,
@@ -221,7 +235,7 @@ def frames_to_hca(
             # numpy did not type the index tricks yet
             data_2d = c_[  # pyright: ignore[reportAny]
                 data_2d,
-                zeros((padded_width - width, height), uint8)
+                zeros((height, padded_width - width), uint8)
             ]
 
         if color_mode == PixelFormat.P4:
@@ -264,7 +278,7 @@ def frames_to_hca(
                 data=b'',
             )
         else:
-            data_1d = data_2d.reshape(data_2d.size)
+            data_1d = data_2d.ravel()
             if not coalesce and (lslice != 0 or rslice != data_1d.size):
                 data_1d = data_1d[lslice:rslice]
             data_bytes = data_1d.tobytes()
@@ -281,20 +295,6 @@ def frames_to_hca(
         hca_frames.append(hca_frame)
 
     return hca
-
-
-def _clip_rgb24_to_rgb12(rgb24: ndarray[tuple[int, int, int], dtype[uint8]]) -> ndarray[tuple[int, int, int], dtype[uint8]]:
-    '''
-    Vectorized routine that converts a RGB24 raw image into Besta RGB12.
-    '''
-    assert rgb24.size % 6 == 0
-
-    clipped = rgb24 // 16
-    outp = empty((rgb24.shape[0], rgb24.shape[1] // 2, rgb24.shape[2]), uint8)
-    outp[..., 0] = clipped[:, 0::2, 0] | (clipped[:, 0::2, 1] << 4)
-    outp[..., 1] = clipped[:, 0::2, 2] | (clipped[:, 1::2, 0] << 4)
-    outp[..., 2] = clipped[:, 1::2, 1] | (clipped[:, 1::2, 2] << 4)
-    return outp
 
 
 def image_to_hca(
@@ -326,7 +326,7 @@ def image_to_hca(
             # numpy did not type the index tricks yet
             data_2d = c_[  # pyright: ignore[reportAny]
                 data_2d,
-                zeros((padded_width - input_image.width, input_image.height), uint8)
+                zeros((input_image.height, padded_width - input_image.width), uint8)
             ]
         if color_mode == PixelFormat.P4:
             data_2d = pack_4b(data_2d)
@@ -350,6 +350,101 @@ def image_to_hca(
         palette=hca_palette,
         frames=[hca_frame],
     )
+
+
+def hca_to_frames(hca: Hca) -> list[Image]:
+    '''
+    Reverse operation of `frames_to_hca()`.
+    '''
+
+    if len(hca.frames) == 0:
+        raise ValueError('Bad HCA object: Object does not contain any frame.')
+
+    if len(hca.frames) == 1:
+        return [hca_to_image(hca)]
+
+    if hca.pixel_format == PixelFormat.RGB12:
+        raise ValueError('Bad HCA object: Object is in RGB12 mode but contains multiple frames.')
+
+    canvas = zeros((hca.height, hca.pitch), uint8)
+    canvas_1d = canvas.ravel()
+    imgs: list[Image] = []
+
+    for frame in hca.frames:
+        if frame.header.frame_type == FrameType.COMPRESSED:
+            data_1d = fromiter(
+                chain.from_iterable(BitstreamReader(BytesIO(frame.data)).decode()),
+                dtype=uint8,
+            )
+        else:
+            data_1d = frombuffer(frame.data, dtype=uint8)
+
+        lp = frame.header.lpadding
+        rp = frame.header.lpadding + data_1d.size
+        if hca.allow_skip:
+            canvas_1d[lp:rp][data_1d != 0xff] = data_1d[data_1d != 0xff]
+        else:
+            canvas_1d[lp:rp] = data_1d
+
+        pixels_1d = (
+            unpack_4b(canvas_1d)
+            if hca.pixel_format == PixelFormat.P4
+            else canvas_1d
+        )
+        pixels_2d = pixels_1d.reshape((hca.height, hca.padded_width))
+
+        img = npa2image(pixels_2d[..., :hca.width], 'L')
+        img.putpalette(tuple(chain.from_iterable(hca.palette.to_rgb24())), 'RGB')
+        if hca.allow_transparency:
+            img.info['transparency'] = hca.transparent_color_index
+            imgs.append(img)
+    return imgs
+
+
+def hca_to_image(hca: Hca) -> Image:
+    '''
+    Reverse operation of `image_to_hca()`.
+    '''
+    frame = hca.frames[0]
+    if frame.header.frame_type == FrameType.COMPRESSED:
+        data_1d = fromiter(
+            chain.from_iterable(BitstreamReader(BytesIO(frame.data)).decode()),
+            dtype=uint8,
+        )
+    else:
+        data_1d = frombuffer(frame.data, dtype=uint8)
+
+    if hca.pixel_format == PixelFormat.RGB12:
+        if hca.width % 4 != 0:
+            raise ValueError('Bad HCA object: Object is RGB12 but the width is not a multiple of 4.')
+        data_2d = data_1d.reshape((hca.height, hca.width // 2, 3))
+        rgb_2d = empty((hca.height, hca.width, 3), uint8)
+        rgb_2d_vec = rgb_2d.reshape((hca.height, hca.width // 2, 2, 3))
+
+        for channel in range(6):
+            in_byte, in_oe = divmod(channel, 2)
+            out_oe, out_byte = divmod(channel, 3)
+            c = data_2d[..., in_byte] & (0xf << (4 if in_oe else 0))
+            rgb_2d_vec[..., out_oe, out_byte] = c | ((c << 4) if in_oe == 0 else (c >> 4))
+
+        return npa2image(rgb_2d, 'RGB')
+
+    if frame.header.lpadding != 0:
+        raise ValueError('Bad HCA object: First frame cannot have left padding.')
+
+    pixels_1d = (
+        unpack_4b(data_1d)
+        if hca.pixel_format == PixelFormat.P4
+        else data_1d
+    )
+    pixels_2d = pixels_1d.reshape((hca.height, hca.padded_width))
+
+    img = npa2image(pixels_2d[:, :hca.width], 'L')
+    img.putpalette(tuple(chain.from_iterable(hca.palette.to_rgb24())), 'RGB')
+    if hca.allow_transparency:
+        img.info['transparency'] = hca.transparent_color_index
+
+    return img
 
 
 def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | None = None) -> tuple[Image | None, Image | None]:

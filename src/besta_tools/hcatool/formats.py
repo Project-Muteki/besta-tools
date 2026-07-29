@@ -399,5 +399,27 @@ class Hca(DataclassMixin):
             # that has a width that is not 4-bytes aligned.
             return self.width
 
+    @property
+    def allow_transparency(self) -> bool:
+        '''
+        Convenience method to check whether transparency processing should be
+        enabled.
+        '''
+        return (
+            self.pixel_format != PixelFormat.RGB12 and
+            self.transparent_color_index != 0xff
+        )
+
+    @property
+    def allow_skip(self) -> bool:
+        '''
+        Convenience method to check whether skip mark processing should be
+        enabled.
+        '''
+        return (
+            (self.pixel_format == PixelFormat.P4 and self.palette.size < 16) or
+            (self.pixel_format == PixelFormat.P8 and self.palette.size < 256)
+        )
+
 
 CsHca = DataclassStruct(Hca)
