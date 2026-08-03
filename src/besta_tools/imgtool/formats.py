@@ -19,7 +19,7 @@ import yaml
 
 from construct import (
     Array,
-    Const,
+    Bytes,
     Check,
     IfThenElse,
     Int32ul,
@@ -32,7 +32,7 @@ from construct import (
     this,
     len_
 )
-from construct_typed import DataclassMixin, DataclassStruct, csfield
+from construct_typed import DataclassMixin, DataclassStruct, csfield, csfield_const, csfield_noinit
 from marshmallow import ValidationError
 from marshmallow import fields as mm_fields
 from marshmallow_dataclass import class_schema as mm_class_schema
@@ -164,7 +164,7 @@ class ImageMetadataV2(DataclassMixin):
     data_size: int = csfield(Int64ul)
     checksum_block_size: int = csfield(Int32ul)
     image_type_key: int = csfield(Int32ul)
-    _padding_0x48: None = csfield(Padding(24))
+    _padding_0x48: None = csfield_noinit(Padding(24))
     checksums: list[ChecksumValue] = csfield(IfThenElse(
         this.checksum_block_size != 0,
         Array(lambda c: div_round_up(c.data_size, c.checksum_block_size), CsChecksumValue),
@@ -207,7 +207,7 @@ CsImageIndexEntryV1 = DataclassStruct(ImageIndexEntryV1)
 class ImageIndexEntryV2(DataclassMixin):
     offset: int = csfield(Int64ul)
     size: int = csfield(Int64ul)
-    _integrity: None = csfield(Check(this.offset != (1 << 64) - 1 and this.size != (1 << 64) - 1))
+    _integrity: None = csfield_noinit(Check(this.offset != (1 << 64) - 1 and this.size != (1 << 64) - 1))
 
 
 CsImageIndexEntryV2 = DataclassStruct(ImageIndexEntryV2)
@@ -216,7 +216,7 @@ CsImageIndexEntryV2 = DataclassStruct(ImageIndexEntryV2)
 @dataclass
 class ImageIndexV1(DataclassMixin):
     image_type: int = csfield(Int32ul)
-    _reserved: bytes = csfield(Const(b'\xff' * 12))
+    _reserved: bytes = csfield_const(Bytes(12), b'\xff' * 12)
     # This will keep the sentinel value at both the build time and parse time,
     # therefore it's required to include a
     # ImageIndexEntryV1(0xffffffff, 0xffffffff) at the end of the list.
@@ -254,15 +254,15 @@ IMAGE_INDEX_V2_SIZEOF = 0x40
 
 @dataclass
 class ImageIndexV2(DataclassMixin):
-    magic: bytes = csfield(Const(IMAGE_INDEX_V2_MAGIC))
-    header_size: int = csfield(Const(IMAGE_INDEX_V2_SIZEOF, Int32ul))
+    magic: bytes = csfield_const(Bytes(4), IMAGE_INDEX_V2_MAGIC)
+    header_size: int = csfield_const(Int32ul, IMAGE_INDEX_V2_SIZEOF)
     format_version: int = csfield(Int32ul)
-    _integrity_supported_format_version: None = csfield(Check(
+    _integrity_supported_format_version: None = csfield_noinit(Check(
         lambda ctx: ctx.format_version in IMAGE_INDEX_V2_VERSIONS
     ))
-    nentries: int = csfield(Rebuild(Int32ul, len_(this.entries)))
-    _padding_0x10: None = csfield(Padding(0x30))
-    entries: list[ImageIndexEntryV2] = csfield(Array(this.nentries, CsImageIndexEntryV2))
+    _nentries: int | None = csfield_noinit(Rebuild(Int32ul, len_(this.entries)))
+    _padding_0x10: None = csfield_noinit(Padding(0x30))
+    entries: list[ImageIndexEntryV2] = csfield(Array(this._nentries, CsImageIndexEntryV2))
 
     def count_entries(self) -> int:
         return len(self.entries)

@@ -463,7 +463,7 @@ def dump_hca_frame(hca: Hca, frame_index: int = 0, frame: HcaFrameContainer | No
     TPO_TC: Final = (255, 0, 0, 127)
     TPO_NOP: Final = (255, 255, 255, 127)
 
-    if frame is None and frame_index >= hca.nframes:
+    if frame is None and frame_index >= len(hca.frames):
         raise ValueError(f'Frame {frame_index} does not exist.')
 
     if frame is None:

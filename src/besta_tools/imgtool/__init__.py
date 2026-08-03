@@ -18,10 +18,11 @@ from .formats import (
     ImageIndexEntryV1,
     ImageIndexV1,
     ImageMetadataV2,
-    ProbeError,
     construct_from_image_file,
     construct_from_manifest,
 )
+
+from ..common.probe import ProbeError
 
 
 class MimeTypeTag(StrEnum):

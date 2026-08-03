@@ -109,7 +109,7 @@ def do_info(file: BufferedReader) -> None:
     click.secho(label_field('Width', str(hca.width)))
     click.secho(label_field('Height', str(hca.height)))
     click.secho(label_field('Pitch', str(hca.pitch)))
-    click.secho(label_field('# of Frames', str(hca.nframes)))
+    click.secho(label_field('# of Frames', str(len(hca.frames))))
     click.secho(label_field('# of Colors', str(hca.palette_size)))
     click.secho(label_field(
         'Transparent Color Index',

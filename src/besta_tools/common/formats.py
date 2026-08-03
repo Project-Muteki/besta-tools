@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, cast, TYPE_CHECKING
+from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
-    from construct import Context, ConstantOrContextLambda, Construct, ListContainer
+    from construct_typed import Context
 
 from dataclasses import dataclass
 from construct import (
     Check,
-    Default,
     Int16ul,
     Rebuild,
     this
 )
-from construct_typed import DataclassMixin, DataclassStruct, csfield
+from construct_typed import DataclassMixin, DataclassStruct, csfield, csfield_noinit
 
 
-def _inv_u16_per_byte(ctx: 'Context') -> int:
+def _inv_u16_per_byte(ctx: Context) -> int:
     value = cast(int, ctx.checksum)
     lo = value & 0xff
     hi = (value >> 8) & 0xff
@@ -25,8 +24,8 @@ def _inv_u16_per_byte(ctx: 'Context') -> int:
 @dataclass
 class ChecksumValue(DataclassMixin):
     checksum: int = csfield(Int16ul)
-    checksum_byteinv: int = csfield(Rebuild(Int16ul, _inv_u16_per_byte))
-    _integrity: None = csfield(Check(
+    checksum_byteinv: int | None = csfield_noinit(Rebuild(Int16ul, _inv_u16_per_byte))
+    _integrity: None = csfield_noinit(Check(
         (
             (this.checksum & 0xff) +
             (this.checksum_byteinv & 0xff) +
@@ -37,9 +36,3 @@ class ChecksumValue(DataclassMixin):
 
 
 CsChecksumValue = DataclassStruct(ChecksumValue)
-
-# The type definition here for Default is wrong. Default accepts a tuple as a default value for list
-# but the type indicates that it only accepts a list.
-# Cast to Any for now to disable type checking.
-def ArrayDefault[T](subcon: Construct[ListContainer[T], list[T]], value: ConstantOrContextLambda[tuple[T, ...]]) -> Default[ListContainer[T], list[T]]:
-    return Default(subcon, cast(Any, value))

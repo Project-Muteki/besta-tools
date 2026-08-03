@@ -7,8 +7,6 @@ from typing import NamedTuple, Self, override
 
 from construct import (
     Bytes,
-    Const,
-    Default,
     Int8ul,
     Int32ul,
     Padded,
@@ -16,9 +14,8 @@ from construct import (
     len_,
     this,
 )
-from construct_typed import DataclassMixin, DataclassStruct, csfield
+from construct_typed import DataclassMixin, DataclassStruct, FlagsEnumBase, TFlagsEnum, csfield, csfield_const, csfield_default, csfield_noinit
 
-from ..common.tenum_patched import FlagsEnumBase, TFlagsEnum
 from .usbms_const import *
 
 
@@ -70,12 +67,12 @@ CsBestaDfuCommand = TFlagsEnum(Int32ul, BestaDfuCommand)
 
 @dataclass
 class CBW(DataclassMixin):
-    dCBWSignature: int = csfield(Const(USBMS_CBW_MAGIC, Int32ul))
+    dCBWSignature: int = csfield_const(Int32ul, USBMS_CBW_MAGIC)
     dCBWTag: int = csfield(Int32ul)
     dCBWDataTransferLength: int = csfield(Int32ul)
     bmCBWFlags: int = csfield(Int8ul)
     bCBWLUN: int = csfield(Int8ul)
-    bCBWCBLength: int = csfield(Rebuild(Int8ul, len_(this.CBWCB)))
+    bCBWCBLength: int | None = csfield_noinit(Rebuild(Int8ul, len_(this.CBWCB)))
     CBWCB: bytes | bytearray = csfield(Padded(16, Bytes(this.bCBWCBLength)))
 
 
@@ -84,7 +81,7 @@ CsCBW = DataclassStruct(CBW)
 
 @dataclass
 class CSW(DataclassMixin):
-    dCSWSignature: int = csfield(Const(USBMS_CSW_MAGIC, Int32ul))
+    dCSWSignature: int = csfield_const(Int32ul, USBMS_CSW_MAGIC)
     dCSWTag: int = csfield(Int32ul)
     dCSWDataResidue: int = csfield(Int32ul)
     bCSWStatus: int = csfield(Int8ul)
@@ -115,7 +112,7 @@ CsCSW = DataclassStruct(CSW)
 class BestaDfuConfigPacket(DataclassMixin):
     command: int = csfield(CsBestaDfuCommand)
     parameter: int = csfield(Int32ul)
-    payload: bytes | bytearray = csfield(Default(Bytes(256), b'\x00' * 256))
+    payload: bytes | bytearray = csfield_default(Bytes(256), default=b'\x00' * 256)
 
 
 CsBestaDfuConfigPacket = DataclassStruct(BestaDfuConfigPacket)

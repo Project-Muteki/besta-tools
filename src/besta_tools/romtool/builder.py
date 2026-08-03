@@ -44,7 +44,7 @@ class SpecToml(TypedDict):
 
 
 # TODO: add proper validator to the spec file.
-def build_embeddable_from_spec_file(spec_dict_in: dict):
+def build_embeddable_from_spec_file(spec_dict_in: dict[str, object]) -> bytes:
     str_table: dict[str, Fragment] = {}
 
     def add_to_strtab(str_: str) -> Fragment:

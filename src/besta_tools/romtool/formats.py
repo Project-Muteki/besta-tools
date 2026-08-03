@@ -1,11 +1,10 @@
 import dataclasses
 import datetime
 
-from construct import Byte, Const, Default, Int16ul, Int32ul
-from construct_typed import DataclassMixin, DataclassStruct, csfield
+from construct import Byte, Bytes, Int16ul, Int32ul
+from construct_typed import DataclassMixin, DataclassStruct, EnumBase, FlagsEnumBase, TEnum, TFlagsEnum, csfield, csfield_const
 
-from ..common.formats import ArrayDefault, CsChecksumValue, ChecksumValue
-from ..common.tenum_patched import EnumBase, TEnum, FlagsEnumBase, TFlagsEnum
+from ..common.formats import CsChecksumValue, ChecksumValue
 
 
 class RomType(FlagsEnumBase):
@@ -74,10 +73,10 @@ CsRomSpecTimestamp = DataclassStruct(RomSpecTimestamp)
 @dataclasses.dataclass
 class RomSpecType(DataclassMixin):
     magic: int = csfield(CsMagicType)
-    spec_size: int = csfield(Const(0x80, Int16ul))
+    spec_size: int = csfield_const(Int16ul, 0x80)
     type_: RomType | int = csfield(Int16ul)  # Intentionally set this to be not an enum so we can pass an int as type
     checksum: ChecksumValue = csfield(CsChecksumValue)
-    unk_0xa: int = csfield(Default(Int16ul, 0xffff))
+    _unk_0xa: int = csfield_const(Int16ul, 0xffff)
     default_locale: RomLocale = csfield(CsRomLocale)
     sections_offset: int = csfield(Int16ul)
     build_timestamp: RomSpecTimestamp = csfield(CsRomSpecTimestamp)
@@ -89,18 +88,18 @@ class RomSpecType(DataclassMixin):
     version_offset: int = csfield(Int32ul)
     data_offset: int = csfield(Int32ul)
     sdk_id_offset: int = csfield(Int32ul)
-    unk_0x3c: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x40: int = csfield(Default(Int32ul, 0xffffffff))
+    _unk_0x3c: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x40: int = csfield_const(Int32ul, 0xffffffff)
     ext_metadata_offset: int = csfield(Int32ul)
-    unk_0x48: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x4c: int = csfield(Default(Int16ul, 0xffff))
-    unk_0x4e: int = csfield(Default(Int16ul, 0xffff))
+    _unk_0x48: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x4c: int = csfield_const(Int16ul, 0xffff)
+    _unk_0x4e: int = csfield_const(Int16ul, 0xffff)
     localized_title_offset: int = csfield(Int32ul)
-    unk_0x54: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x58: int = csfield(Default(Int32ul, 0xffffffff))
+    _unk_0x54: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x58: int = csfield_const(Int32ul, 0xffffffff)
     subtype: int = csfield(Int32ul)
-    unk_0x60: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x64: list[int] = csfield(ArrayDefault(Int32ul[7], tuple([0xffffffff] * 7)))
+    _unk_0x60: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x64: bytes = csfield_const(Bytes(4 * 7), b'\xff' * 4 * 7)
 
 
 CsRomSpecType = DataclassStruct(RomSpecType)
@@ -108,7 +107,7 @@ CsRomSpecType = DataclassStruct(RomSpecType)
 
 @dataclasses.dataclass
 class RomFallbackTitle(DataclassMixin):
-    unk_0x0: int = csfield(Default(Int16ul, 0xffff))
+    _unk_0x0: int = csfield_const(Int16ul, 0xffff)
     locale: RomLocale = csfield(CsRomLocale)
     title_offset: int = csfield(Int32ul)
     chinese_title_offset: int = csfield(Int32ul)
@@ -121,9 +120,9 @@ CsRomFallbackTitle = DataclassStruct(RomFallbackTitle)
 
 @dataclasses.dataclass
 class RomExtMetadataHeader(DataclassMixin):
-    unk_0x0: list[int] = csfield(ArrayDefault(Int32ul[5], tuple([0xffffffff] * 5)))
+    _unk_0x0: bytes = csfield_const(Bytes(4 * 5), b'\xff' * 4 * 5)
     num_localized_title_entries: int = csfield(Int32ul)
-    unk_0x18: list[int] = csfield(ArrayDefault(Int32ul[3], tuple([0xffffffff] * 3)))
+    _unk_0x18: bytes = csfield_const(Bytes(4 * 3), b'\xff' * 4 * 3)
 
 
 CsRomExtMetadataHeader = DataclassStruct(RomExtMetadataHeader)
@@ -133,9 +132,9 @@ CsRomExtMetadataHeader = DataclassStruct(RomExtMetadataHeader)
 class RomLocalizedTitle(DataclassMixin):
     num_entries: int = csfield(Int32ul)
     locale: RomLocale = csfield(CsRomLocale)
-    unk_0x6: int = csfield(Default(Int16ul, 0x0))
-    unk_0x8: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0xc: int = csfield(Default(Int32ul, 0xffffffff))
+    _unk_0x6: int = csfield_const(Int16ul, 0x0)
+    _unk_0x8: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0xc: int = csfield_const(Int32ul, 0xffffffff)
 
 
 CsRomLocalizedTitle = DataclassStruct(RomLocalizedTitle)
@@ -144,14 +143,14 @@ CsRomLocalizedTitle = DataclassStruct(RomLocalizedTitle)
 @dataclasses.dataclass
 class RomLocalizedTitleEntry(DataclassMixin):
     locale: RomLocale = csfield(CsRomLocale)
-    unk_0x2: int = csfield(Default(Int16ul, 0x0))
-    unk_0x4: int = csfield(Default(Int32ul, 0xffffffff))
+    _unk_0x2: int = csfield_const(Int16ul, 0x0)
+    _unk_0x4: int = csfield_const(Int32ul, 0xffffffff)
     title_offset: int = csfield(Int32ul)
     short_title_offset: int = csfield(Int32ul)
-    unk_0x10: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x14: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x18: int = csfield(Default(Int32ul, 0xffffffff))
-    unk_0x1c: int = csfield(Default(Int32ul, 0xffffffff))
+    _unk_0x10: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x14: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x18: int = csfield_const(Int32ul, 0xffffffff)
+    _unk_0x1c: int = csfield_const(Int32ul, 0xffffffff)
 
 
 CsRomLocalizedTitleEntry = DataclassStruct(RomLocalizedTitleEntry)
@@ -159,7 +158,7 @@ CsRomLocalizedTitleEntry = DataclassStruct(RomLocalizedTitleEntry)
 
 @dataclasses.dataclass
 class RomExecutableHeaderType(DataclassMixin):
-    header_size: int = csfield(Const(0x80, Int16ul))
+    header_size: int = csfield_const(Int16ul, 0x80)
     code_size: int = csfield(Int32ul)
     unk_0x8: int = csfield(Int32ul)
     unk_0xc: int = csfield(Int32ul)

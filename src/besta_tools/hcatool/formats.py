@@ -8,20 +8,19 @@ complexity, while maintaining the flexibility of the resulting objects.
 
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from typing import TYPE_CHECKING, Self, cast, override
 
-from construct import Array, Bytes, Check, Computed, Const, Default, If, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, ValidationError, len_, this
-from construct_typed import DataclassMixin, DataclassStruct, csfield
+from construct import Array, Bytes, Check, Computed, Const, If, IfThenElse, Int16ul, Int32ul, Int8ul, Pass, Rebuild, Switch, ValidationError, len_, this
+from construct_typed import DataclassMixin, DataclassStruct, EnumBase, TEnum, csfield, csfield_const, csfield_default, csfield_noinit
 
 from besta_tools.common.utils import align
 
-from ..common.tenum_patched import EnumBase, TEnum
-
 
 if TYPE_CHECKING:
-    from construct import Context
+    from construct_typed import Context
+    from _typeshed import MaybeNone
 
 
 class PixelFormat(EnumBase):
@@ -115,7 +114,7 @@ class HcaPaletteBase(ABC):
 # format).
 @dataclass
 class HcaPalette8Bpp(DataclassMixin, HcaPaletteBase):
-    _len: int | None = csfield(cast('Computed[int]', Computed(this._.palette_size)))
+    _len: int | None = csfield_noinit(cast('Computed[int]', Computed(this._.palette_size)))
     color_even: list[int] = csfield(Array(this._len, Int16ul))
     color_odd: list[int] = csfield(Array(this._len, Int16ul))
 
@@ -181,12 +180,18 @@ CsHcaPalette8Bpp = DataclassStruct(HcaPalette8Bpp)
 
 @dataclass
 class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
-    len_: int = csfield(cast('Computed[int]', Computed(this._.palette_size)))
+    _len: int | None = csfield_noinit(cast('Computed[int]', Computed(this._.palette_size)))
     color: list[int] = csfield(Array(16 * 16, Int32ul))
+    # HACK: This is a pure Python field that is used to help reading palette
+    # data. Manually specify the subcon to Pass here to let construct_typing
+    # safely ignore this field.
+    len_: int = field(default=0, metadata={'subcon': Pass})
 
     @property
     @override
     def size(self) -> int:
+        if self._len is not None and self._len != self.len_:
+            self.len_ = self._len
         return self.len_
 
     @classmethod
@@ -196,14 +201,14 @@ class HcaPalette4Bpp(DataclassMixin, HcaPaletteBase):
             raise ValueError('Palette must have no more than 16 entries.')
         sparse = dict(enumerate(rgb12s))
 
-        res = cls(color=[(sparse.get(x, 0) << 12) | sparse.get(y, 0) for y in range(16) for x in range(16)])
-        res.len_ = len(rgb12s)
+        res = cls(color=[(sparse.get(x, 0) << 12) | sparse.get(y, 0) for y in range(16) for x in range(16)], len_=len(rgb12s))
+        res._len = res.len_
 
         return res
 
     @override
     def to_rgb12(self) -> list[int]:
-        return [(c >> 12) & 0xfff for c in islice(self.color, self.len_)]
+        return [(c >> 12) & 0xfff for c in islice(self.color, self.size)]
 
     def color_as_iter(self) -> Generator[tuple[tuple[int, int, int], tuple[int, int, int]]]:
         return (
@@ -239,7 +244,7 @@ class HcaPaletteDummy(DataclassMixin, HcaPaletteBase):
     '''
     Empty palette class so we can mount our stuff onto it.
     '''
-    _color: None = csfield(Pass)
+    _color: None = csfield_noinit(Pass)
 
     @property
     @override
@@ -264,8 +269,8 @@ class HcaFrameHeader(DataclassMixin):
     frame_type: FrameType = csfield(CsFrameType)
     seq: int = csfield( Int16ul)
     lpadding: int = csfield(Int32ul)
-    _sbz_0x8: int | None = csfield(Const(0, Int8ul))
-    _padding: bytes | None = csfield(Default(Bytes(3), b'\x00\x00\x00'))
+    _sbz_0x8: int | None = csfield_const(Int8ul, 0)
+    _padding: bytes | None = csfield_default(Bytes(3), default=b'\x00\x00\x00')
 
 
 CsHcaFrameHeader = DataclassStruct(HcaFrameHeader)
@@ -273,8 +278,8 @@ CsHcaFrameHeader = DataclassStruct(HcaFrameHeader)
 
 @dataclass
 class HcaFrameContainer(DataclassMixin):
-    _len: int = csfield(IfThenElse(
-        this._index == this._.nframes - 1,
+    _len: int | None = csfield_noinit(IfThenElse(
+        this._index == this._._nframes - 1,
         cast(
             'Computed[int]',
             Computed(
@@ -328,27 +333,27 @@ def rebuild_8bpp_palette_length(ctx: 'Context') -> int:
 
 @dataclass
 class Hca(DataclassMixin):
-    magic: bytes = csfield(Const(b'HCA'))
+    magic: bytes = csfield_const(Bytes(3), b'HCA')
     pixel_format: PixelFormat = csfield(CsPixelFormat)
     height: int = csfield(Int16ul)
     width: int = csfield(Int16ul)
-    _width_check: None = csfield(
+    _width_check: None = csfield_noinit(
         If(this.pixel_format == PixelFormat.RGB12, Check(this.width % 4 == 0))
     )
-    nframes: int = csfield(Rebuild(Int8ul, len_(this.frames)))
-    # TODO: Somehow type of Switch didn't get automatically detected.
-    raw_palette_size: int = csfield(cast(
-        'Switch[int, int]',
+    _nframes: 'int | MaybeNone' = csfield_noinit(Rebuild(Int8ul, len_(this.frames)))
+    # Intentionally don't cast the Switch so it can stay as a "can build from
+    # None" type.
+    raw_palette_size: 'int | MaybeNone' = csfield_noinit(
         Switch(this.pixel_format, {
-            PixelFormat.P4: Rebuild(Int8ul, this.palette.len_),
+            PixelFormat.P4: Rebuild(Int8ul, this.palette.size),
             PixelFormat.P8: Rebuild(
                 Int8ul,
                 rebuild_8bpp_palette_length,
             ),
             PixelFormat.RGB12: Const(0, Int8ul),
         })
-    ))
-    palette_size: int = csfield(cast(
+    )
+    palette_size: 'int | MaybeNone' = csfield_noinit(cast(
         'Computed[int]',
         Computed(lambda ctx: (
             256
@@ -356,10 +361,10 @@ class Hca(DataclassMixin):
             else ctx.raw_palette_size
         )),
     ))
-    _nframes2: int | None = csfield(Rebuild(Int8ul, len_(this.frames)))
-    _check_nframes_match: None = csfield(Check(this.nframes == this._nframes2))
+    _nframes2: int | None = csfield_noinit(Rebuild(Int8ul, len_(this.frames)))
+    _check_nframes_match: None = csfield_noinit(Check(this._nframes == this._nframes2))
     transparent_color_index: int = csfield(Int8ul)
-    palette: HcaPaletteBase = csfield(cast(
+    palette: HcaPaletteBase = csfield(subcon=cast(
         'Switch[HcaPaletteBase, HcaPaletteBase]',
         Switch(this.pixel_format, {
             PixelFormat.P4: CsHcaPalette4Bpp,
@@ -367,9 +372,9 @@ class Hca(DataclassMixin):
             PixelFormat.RGB12: CsHcaPaletteDummy,
         })
     ))
-    _data_size: int | None = csfield(Rebuild(Int32ul, rebuild_hca_data_size))
-    _frame_offsets: list[int] | None = csfield(Rebuild(Array(this.nframes, Int32ul), rebuild_hca_frame_offsets))
-    frames: list[HcaFrameContainer] = csfield(Array(this.nframes, CsHcaFrameContainer))
+    _data_size: int | None = csfield_noinit(Rebuild(Int32ul, rebuild_hca_data_size))
+    _frame_offsets: list[int] | None = csfield_noinit(Rebuild(Array(this._nframes, Int32ul), rebuild_hca_frame_offsets))
+    frames: list[HcaFrameContainer] = csfield(Array(this._nframes, CsHcaFrameContainer))
 
     @property
     def pitch(self) -> int:
