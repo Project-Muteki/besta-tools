@@ -2,16 +2,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from io import SEEK_CUR, BufferedReader
 from logging import getLogger
-from typing import Self
+from typing import Final, Self
 
 from besta_tools.common.utils import is_strictly_nul_terminated
 
 
-logger = getLogger('besta_tools.common.probe')
+logger: Final = getLogger('besta_tools.common.probe')
 
-IMAGE_TYPE_SYSTEM_DATA_MAGIC = 0x0001801d
-IMAGE_INDEX_V2_MAGIC = b'\xaa\x55\xaa\x55'
-IMAGE_INDEX_V1_MAGIC = IMAGE_TYPE_SYSTEM_DATA_MAGIC.to_bytes(4, 'little')
+
+IMAGE_INDEX_V2_MAGIC: Final = b'\xaa\x55\xaa\x55'
 
 
 class ProbeError(RuntimeError):
@@ -175,8 +174,8 @@ def probe_image(
             logger.debug('Index V2 magic found.')
             index_type = 2
             block_size = offset
-        elif marker == IMAGE_INDEX_V1_MAGIC:
-            logger.debug('Index V1 magic found.')
+        elif header_format_version == 1:
+            logger.debug('Header format is V1 and no index V2 marker found. Assuming index V1.')
             index_type = 1
             block_size = offset
 

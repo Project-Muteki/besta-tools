@@ -1,22 +1,14 @@
-from typing import Final, TypedDict, NotRequired, cast
+from typing import TypedDict, NotRequired, cast
 from collections.abc import Mapping
 
 import io
 
 from .formats import RomExtMetadataHeader, CsRomSpecType, CsRomExtMetadataHeader, CsRomLocalizedTitle, \
-    CsRomLocalizedTitleEntry, CsRomFallbackTitle, RomLocalizedTitle, RomLocale, RomFallbackTitle, RomSpecType, \
+    CsRomLocalizedTitleEntry, CsRomFallbackTitle, RomLocalizedTitle, RomFallbackTitle, RomSpecType, \
     MagicType, RomType, RomSpecTimestamp, RomLocalizedTitleEntry
-from ..common.formats import ChecksumValue
+from ..common.formats import ChecksumValue, LOCALE_MAPPING, RomLocale
 from ..common.utils import simple_checksum, Fragment, BinaryBuilder
 
-LOCALE_MAPPING: Final[dict[str, RomLocale]] = {
-    'zh_CN': RomLocale.ZH_CN,
-    'zh_TW': RomLocale.ZH_TW,
-    'ja': RomLocale.JA_JP,
-    'ko': RomLocale.KO_KR,
-    'th': RomLocale.TH_TH,
-    'en': RomLocale.EN_US,
-}
 
 SpecTomlRomSection = TypedDict('SpecTomlRomSection', {
     'title': str,

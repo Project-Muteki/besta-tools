@@ -4,7 +4,7 @@ import datetime
 from construct import Byte, Bytes, Int16ul, Int32ul
 from construct_typed import DataclassMixin, DataclassStruct, EnumBase, FlagsEnumBase, TEnum, TFlagsEnum, csfield, csfield_const
 
-from ..common.formats import CsChecksumValue, ChecksumValue
+from ..common.formats import CsChecksumValue, ChecksumValue, RomLocale, CsRomLocale
 
 
 class RomType(FlagsEnumBase):
@@ -16,21 +16,6 @@ class RomType(FlagsEnumBase):
 
 
 CsRomType = TFlagsEnum(Int16ul, RomType)
-
-
-class RomLocale(FlagsEnumBase):
-    NONE = 0x0
-    ZH_CN = 0x1
-    ZH_TW = 0x2
-    JA_JP = 0x4
-    KO_KR = 0x8
-    TH_TH = 0x10
-    EN_US = 0x1000
-    FORCE_UTF16 = 0x8000
-    UNSET = 0xffff
-
-
-CsRomLocale = TFlagsEnum(Int16ul, RomLocale)
 
 
 class MagicType(EnumBase):
