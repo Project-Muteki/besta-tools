@@ -4,7 +4,7 @@ from io import SEEK_CUR, BufferedReader
 from logging import getLogger
 from typing import Final, Self
 
-from besta_tools.common.utils import is_strictly_nul_terminated
+from besta_tools.common.utils import is_strictly_nul_terminated, log2_align, log2_align_minmax
 
 
 logger: Final = getLogger('besta_tools.common.probe')
@@ -19,6 +19,7 @@ class ProbeError(RuntimeError):
 
 class KernelArch(StrEnum):
     UNSET = ''
+    ARMV4 = 'V4T'
     ARMV5 = 'V5J'
     ARMV5_NUVOTON = 'W55'
     ARMV6 = 'V6K'
@@ -37,6 +38,7 @@ class KernelArch(StrEnum):
 
 class SocType(StrEnum):
     UNSET = ''
+    S3C2443 = '2443'
     S3C2450 = '2450'
     STMP3738 = '3738'
     IMX233 = '3780'
@@ -169,19 +171,24 @@ def probe_image(
     logger.debug('Searching for index magic...')
     for offset in range(0, search_limit, step_size):
         f.seek(base_offset + offset)
-        marker = f.read(step_size)[:4]
+        line = f.read(step_size)
+        marker = line[:4]
         if marker == IMAGE_INDEX_V2_MAGIC:
             logger.debug('Index V2 magic found.')
             index_type = 2
             block_size = offset
         elif header_format_version == 1:
-            logger.debug('Header format is V1 and no index V2 marker found. Assuming index V1.')
-            index_type = 1
-            block_size = offset
+            marker2 = line[4:16]
+            if marker2 == b'\xff' * 12:
+                logger.debug('Header format is V1 and found the index V1 start pattern.')
+                index_type = 1
+                block_size = offset
 
     if index_type is None:
         raise ProbeError('Cannot determine index type.')
     if block_size is None:
         raise ProbeError('Cannot determine block size.')
-    
+
+    block_size = log2_align_minmax(block_size, 256, 4096)
+
     return ProbeResultData(header_format_version, index_type, block_size)

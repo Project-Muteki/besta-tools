@@ -2,6 +2,7 @@ from typing import AnyStr, TYPE_CHECKING, Callable
 from dataclasses import dataclass
 from itertools import islice
 from io import BufferedReader, BytesIO, SEEK_END, SEEK_SET
+from math import log2, ceil, exp2
 import shutil
 import os
 
@@ -251,6 +252,22 @@ def generate_padding(length: int, blksize: int, greedy: bool = False, pad_byte: 
 
 def div_round_up(a: float, b: float) -> int:
     return int(-(-a // b))
+
+
+def log2_align(pos: int) -> int:
+    '''
+    Align `pos` to the next power of 2.
+
+    >>> log2_align(4096)
+    4096
+    >>> log2_align(4097)
+    8192
+    '''
+    return int(exp2(ceil(log2(pos))))
+
+
+def log2_align_minmax(pos: int, min_: int, max_: int) -> int:
+    return min(max_, max(min_, log2_align(pos)))
 
 
 def anybase(s: int | str | None) -> int | None:
