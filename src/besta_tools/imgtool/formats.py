@@ -41,7 +41,7 @@ from filetype import guess, add_type as ft_add_type
 from .filetype import TYPES
 
 from ..common.formats import CsChecksumValue, ChecksumValue
-from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, div_round_up, generate_padding
+from ..common.utils import BinaryBuilder, Checksum, Fragment, align, copyfileobjex, div_round_up, generate_padding, log2_align_minmax
 from ..common.probe import probe_image as common_probe_image, ProbeResultData, ProbeError, IMAGE_INDEX_V2_MAGIC
 
 
@@ -95,6 +95,14 @@ def guess_block_size_image_v2(f: BufferedReader, search_limit: int = 0x100000, s
     for offset in range(0, search_limit, step_size):
         f.seek(offset)
         if f.read(step_size)[:4] == IMAGE_INDEX_V2_MAGIC:
+            return offset
+    raise ProbeError('Cannot determine block size.')
+
+
+def guess_block_size_image_v1(f: BufferedReader, search_limit: int = 0x100000, step_size: int = 16) -> int:
+    for offset in range(align(f.tell(), 16), search_limit, step_size):
+        f.seek(offset)
+        if f.read(step_size)[4:16] == b'\xff' * 12:
             return offset
     raise ProbeError('Cannot determine block size.')
 
@@ -284,7 +292,7 @@ def type_validator(val: str) -> None:
 
 @dataclass
 class ImageManifest:
-    manifest_version: Annotated[int | None, mm_fields.Field(load_default=None)]
+    manifest_version: Annotated[int | None, mm_fields.Field(load_default=1, dump_default=2)]
     header_format_version: int
     index_format_version: Annotated[int | None, mm_fields.Field(load_default=None)]
     name: str
@@ -298,6 +306,7 @@ class ImageManifest:
     content_size: int
     data_size: int
     header_size: Annotated[int | None, mm_fields.Field(load_default=None)]
+    header_split: Annotated[int | None, mm_fields.Field(load_default=None)]
     sections: list[ImageManifestSection]
 
     def parse_type_key(self) -> int:
@@ -527,6 +536,7 @@ class ImageFileV1(AbstractImageFile):
             content_size=self.metadata_v1.content_size,
             data_size=self.metadata_v1.data_size,
             header_size=0x500,
+            header_split=0x100,
             sections=sections,
         )
 
@@ -563,6 +573,8 @@ class ImageFileV1(AbstractImageFile):
         image_path = Path(image_path)
         with image_path.open('rb') as f:
             metadata = CsImageMetadataV1.parse_stream(f)
+            index_offset = guess_block_size_image_v1(f)
+            f.seek(index_offset)
             index = CsImageIndexV1.parse_stream(f)
 
         return cls(image_path, True, metadata, index)
@@ -674,7 +686,7 @@ class ImageFileV2(AbstractImageFile):
                 yield f'sections/{i:08x}.{probe_ext}', probe_mime
 
         with self.path.open('rb') as f:
-            guessed_block_size = guess_block_size_image_v2(f)
+            guessed_block_size = log2_align_minmax(guess_block_size_image_v2(f), 256, 4096)
 
         # Alignment value by definition must be integer multiples of every data offset value.
         # If there's only one data entry, disable alignment.
@@ -703,6 +715,7 @@ class ImageFileV2(AbstractImageFile):
             content_size=self.metadata_v2.content_size,
             data_size=self.metadata_v2.data_size,
             header_size=self.index_v2.entries[0].offset if len(self.index_v2.entries) > 0 else None,
+            header_split=guessed_block_size,
             sections=sections,
         )
 
@@ -743,10 +756,9 @@ class ImageFileV2(AbstractImageFile):
     def load(cls, image_path: str | Path) -> Self:
         image_path = Path(image_path)
         with image_path.open('rb') as f:
-            block1_offset = guess_block_size_image_v2(f)
-            f.seek(0)
             metadata = CsImageMetadataV2.parse_stream(f)
-            f.seek(block1_offset)
+            index_offset = guess_block_size_image_v2(f)
+            f.seek(index_offset)
             index = CsImageIndexV2.parse_stream(f)
 
         return cls(image_path, True, metadata, index)
